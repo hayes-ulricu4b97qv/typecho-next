@@ -1,0 +1,15 @@
+.git
+.github
+ck
+data
+bin
+.e2e-artifacts
+web/node_modules
+web/dist
+.env
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

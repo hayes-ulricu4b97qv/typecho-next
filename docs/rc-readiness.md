@@ -706,6 +706,11 @@
 ## 发布 ZIP 生成后校验（2026-10-20）
 
 - Windows 打包任务现在会在输出目录使用唯一临时 ZIP，重新解压并检查发布所需文件、非空可执行文件和前端入口，以及 `VERSION`、`BUILD.txt` 与请求版本/提交一致；校验完成后才移动到正式文件名，失败仅清理自己的临时包。
+
+## 仅从空目录初始化 SQLite（2026-10-21）
+
+- 移除早期 Go schema 自动升级及其时间戳改写；只有空数据库会创建当前完整 schema，未版本化的非空数据库和不支持的版本在修改前拒绝启动。
+- 新站点应使用新的空 `APP_DATA_DIR` 初始化。现有当前版本数据库仍需通过完整结构校验；PHP 和 `app.json` 导入仍不受支持。
 - 运维文档已同步；本轮未运行打包流程，仍需在发布验收中验证。
 
 ## HTTP 1xx 访问状态记录（2026-10-20）
@@ -738,3 +743,11 @@
 
 - 新增 6 个 Go 回归用例：验证应用日志在大小边界轮换且只保留最新副本、轮换失败时不丢旧备份并能恢复写入；验证请求 ID 不采信调用方头且在响应、context 和日志间一致；验证多个 1xx 后记录最终状态、`ResponseController.Flush` 透传并登记隐式 200，以及 panic 日志包含堆栈但不泄漏 panic 内容。
 - 当前工作区 `go test -count=1 ./...`、`go test -race -count=1 ./cmd/server ./internal/httpapi`、`go vet ./...`、`go build ./...`、Staticcheck v0.8.2、Go 格式检查和 `git diff --check` 均通过。
+
+## 当前离线复验（2026-10-21）
+
+- 管理端切换区块时会重新读取列表数据；Playwright 覆盖七个管理区块在 390px 和 320px 视口下的显示，并等待设置锚点滚动完成后确认标题避开粘性页头与导航。Windows Playwright E2E 31/31 通过，浏览器异常为 0，截图显示真实仪表盘；E2E 临时目录由运行器自动清理。
+- Go 全量测试、目标包 race、`go vet ./...`、Go 格式检查、`go mod tidy -diff`、Staticcheck v0.8.2、Actionlint v1.7.12、前端构建、代理测试（2/2）、`npm audit --audit-level=high`（0 项漏洞）和 `git diff --check` 均通过。
+- Govulncheck v1.1.4 报告 0 项可达漏洞；另有 1 项 `golang.org/x/crypto/openpgp` 模块公告（GO-2026-5932），项目没有调用该包，且暂时没有修复版本。
+- Docker 镜像 `typecho-next:goal-audit` 已用当前前端重新构建。隔离烟测禁用网络且不发布端口，使用只读根文件系统、移除 capabilities 并以 UID 10001 运行；验证首次初始化、媒体上传、文章写入、命名卷重建后会话与数据保留，以及带图片的备份恢复到全新数据卷。恢复后所有者会话、文章、媒体记录和原始 GIF 字节均可读取；烟测创建的容器、命名卷和临时文件均已清理。`deploy/smoke-test.sh` 已加入 Linux CI。Docker Compose 两种子网配置和两份 Caddy 配置均已校验。
+- 未启动或发布生产服务。公网 DNS、Caddy 自动签发证书及外部 HTTPS 验收因站点保持离线而未执行；本地构建和配置检查不代表公网 TLS 已验证。上述结果仅对应当前未提交工作区，远端 CI 尚未验证这些改动。

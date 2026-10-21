@@ -6,7 +6,7 @@ Typecho Next is a self-hosted personal blog for Windows x64.
 
 1. Extract this ZIP to a stable application directory.
 2. Run `start.cmd` and keep its console open while the site is running.
-3. Open <http://127.0.0.1:8080/setting> and create the owner account.
+3. Open <http://127.0.0.1:8081/setting> and create the owner account.
 
 The launcher stores the SQLite database and uploaded images under `%LOCALAPPDATA%\TypechoNext\data` by default. Set `APP_DATA_DIR` or `APP_MEDIA_DIR` in the process environment before starting when you need different locations. The application does not load `.env` files.
 

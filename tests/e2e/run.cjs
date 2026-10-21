@@ -70,9 +70,12 @@ function assertNeutralGround(value) {
   assert.ok(r > 220 && g > 220 && b > 220, `page ground is too dark (${value})`);
   assert.ok(!(r === 251 && g === 246 && b === 239), 'old cream paper is still the page ground');
 }
-function assertZeroRadius(value, label) {
+function assertCompactRadius(value, label) {
   assert.equal(typeof value, 'string', label + ' is missing');
-  for (const part of value.trim().split(/\s+/)) assert.ok(part === '0px' || part === '0', `${label} radius ${value}`);
+  for (const part of value.trim().split(/\s+/)) {
+    assert.match(part, /^\d+(?:\.\d+)?px$/, `${label} radius ${value}`);
+    assert.ok(Number.parseFloat(part) <= 8, `${label} radius ${value} exceeds 8px`);
+  }
 }
 async function sampleChrome(p, suffix) {
   const routes = [
@@ -129,9 +132,17 @@ async function login(ctx, username, password) {
   await p.locator('.stats-grid').waitFor(); return p;
 }
 function postRow(title) {return page.locator('#posts .admin-post-row').filter({hasText:title});}
+async function openAdminSection(name) {
+  if (new URL(page.url()).pathname !== '/admin') await page.goto(base+'/admin');
+  const link=page.locator('.command-nav').getByRole('link',{name,exact:true});
+  if(await link.getAttribute('aria-current')!=='page')await link.click();
+}
 async function writePost(title,slug,content,status='published') {
-  await page.goto(base+'/admin');
-  await page.getByRole('button',{name:'+ 写文章',exact:true}).click();
+  await openAdminSection('文章');
+  const existingEditor=page.locator('#post-editor');
+  const posts=page.locator('#posts');
+  if(await existingEditor.isVisible())await posts.getByRole('button',{name:'关闭编辑器',exact:true}).click();
+  await posts.getByRole('button',{name:'+ 写文章',exact:true}).click();
   await page.getByPlaceholder('文章标题',{exact:true}).fill(title);
   await page.getByPlaceholder('留空则保留现有地址或按标题生成').fill(slug);
   await page.getByPlaceholder('开始写作，支持 Markdown…').fill(content);
@@ -161,8 +172,24 @@ async function writePost(title,slug,content,status='published') {
     await page.getByLabel('管理员邮箱',{exact:true}).fill('owner@example.com');
     await page.getByLabel('用户名',{exact:true}).fill('owner');
     await page.getByLabel('密码',{exact:true}).fill('password-owner-123');
+    const passwordConfirmation = page.getByLabel('确认密码',{exact:true});
+    await passwordConfirmation.fill('different-password-123');
+    await page.getByText('两次输入的密码不一致',{exact:true}).waitFor();
+    assert.equal(await passwordConfirmation.getAttribute('aria-invalid'),'true');
+    await page.getByRole('button',{name:'完成设置并进入管理端'}).click();
+    assert.equal(new URL(page.url()).pathname,'/setting','setup must reject mismatched passwords');
+    await passwordConfirmation.fill('password-owner-123');
     await page.getByRole('button',{name:'完成设置并进入管理端'}).click();await page.waitForURL('**/admin');
     await page.locator('.stats-grid').waitFor();assert.equal((await fetch(base+'/readyz')).status,200);
+  });
+  await step('empty overview quickstart opens a blank post editor',async()=>{
+    await page.goto(base+'/admin');
+    await page.locator('.overview-quickstart').getByRole('button',{name:'写第一篇文章',exact:true}).click();
+    await page.waitForURL('**/admin#posts');
+    await page.locator('#post-editor').waitFor();
+    assert.equal(await page.getByPlaceholder('文章标题',{exact:true}).inputValue(),'');
+    assert.equal(await page.locator('#posts .section-count').innerText(),'0 篇');
+    assert.equal((await api(owner,'GET','/api/v1/content/posts?includeDraft=true')).total,0,'opening the editor must not create a post');
   });
   await step('admin and settings routes match complete path segments',async()=>{
     for(const route of ['/administrator','/settings']){
@@ -171,7 +198,7 @@ async function writePost(title,slug,content,status='published') {
       assert.equal(reader.url(),base+route,`${route} must not redirect to a managed route`);
     }
   });
-  await step('square minimalist chrome on reader, admin and settings',async()=>{
+  await step('compact chrome on reader, admin and settings',async()=>{
     const before = errors.length;
     const first = await sampleChrome(page, 'a');
     const second = await sampleChrome(page, 'b');
@@ -180,7 +207,7 @@ async function writePost(title,slug,content,status='published') {
       assert.equal(sample.filled, true, sample.path + ' viewport is blank');
       assert.equal(sample.backgroundImage, 'none', sample.path + ' still has a paper gradient');
       assertNeutralGround(sample.ground);
-      for (const key of ['button', 'input', 'card', 'avatar']) assertZeroRadius(sample.radii[key], sample.path + ' ' + key);
+      for (const key of ['button', 'input', 'card', 'avatar']) assertCompactRadius(sample.radii[key], sample.path + ' ' + key);
     }
     assert.equal(errors.length, before, 'page errors during visual probe: ' + errors.slice(before).join('; '));
     console.log('VISUAL ' + JSON.stringify(chromeSignature(first)));
@@ -194,11 +221,14 @@ async function writePost(title,slug,content,status='published') {
     await page.locator('.settings-index').getByRole('link',{name:'站点信息',exact:true}).click();await save.click();await page.getByText('设置已保存',{exact:true}).waitFor();assert.ok(await save.isDisabled());
     await page.reload();assert.equal(await page.getByLabel('站点描述',{exact:true}).inputValue(),'E2E 站点介绍');
     await page.setViewportSize({width:390,height:844});await page.locator('.settings-index').getByRole('link',{name:'阅读与评论',exact:true}).click();
-    await page.waitForFunction(()=>{const y=document.getElementById('reading').getBoundingClientRect().top;return y>=0&&y<160;});
+    await page.waitForFunction(()=>Math.abs(document.getElementById('reading').getBoundingClientRect().top-128)<4);
+    assert.ok(await page.evaluate(()=>{const target=document.getElementById('reading').getBoundingClientRect();const header=document.querySelector('.settings-bar').getBoundingClientRect();const nav=document.querySelector('.settings-index').getBoundingClientRect();return target.top>=Math.max(header.bottom,nav.bottom)+4;}),'mobile settings section should clear the sticky header and navigation');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'mobile settings overflow');
     assert.equal(await page.locator('.settings-index').evaluate(el=>getComputedStyle(el).position),'sticky');
     await page.screenshot({path:path.join(artifacts,'mobile-settings.png'),fullPage:false});await page.setViewportSize({width:1280,height:800});
-    await page.locator('.settings-index').getByRole('link',{name:'站点信息',exact:true}).click();await page.waitForFunction(()=>{const y=document.getElementById('site').getBoundingClientRect().top;return y>=0&&y<160;});await page.screenshot({path:path.join(artifacts,'settings.png'),fullPage:false});
+    await page.locator('.settings-index').getByRole('link',{name:'站点信息',exact:true}).click();await page.waitForFunction(()=>Math.abs(document.getElementById('site').getBoundingClientRect().top-84)<4);
+    assert.ok(await page.evaluate(()=>document.getElementById('site').getBoundingClientRect().top>=document.querySelector('.settings-bar').getBoundingClientRect().bottom+4),'settings section should clear the sticky header');
+    await page.screenshot({path:path.join(artifacts,'settings.png'),fullPage:false});
     let warned=false;const onDialog=d=>{if(d.type()==='beforeunload')warned=true;};page.on('dialog',onDialog);
     await page.getByLabel('站点描述',{exact:true}).fill('Unsaved text');await page.locator('.settings-links').getByRole('link',{name:'管理',exact:true}).click();await page.waitForURL('**/admin');page.off('dialog',onDialog);assert.ok(warned,'unsaved settings must warn before leaving');
     await reader.goto(base+'/setting');await reader.getByRole('heading',{name:'请先登录',exact:true}).waitFor();await reader.getByRole('link',{name:'前往登录',exact:true}).waitFor();
@@ -218,7 +248,7 @@ async function writePost(title,slug,content,status='published') {
     await reader.goto(base+'/user/e2e-custom-fields');
     const renderedFields=reader.locator('.post-custom-fields');await renderedFields.getByText('Original caption',{exact:true}).waitFor();
     assert.ok((await renderedFields.innerText()).includes(injected));assert.equal(await renderedFields.locator('img').count(),0);assert.equal(await reader.evaluate(()=>window.e2eXss),undefined);
-    await page.goto(base+'/admin');await postRow('E2E 自定义字段').getByRole('button',{name:'编辑',exact:true}).click();
+    await page.reload();await openAdminSection('文章');await postRow('E2E 自定义字段').getByRole('button',{name:'编辑',exact:true}).click();
     const rows=page.locator('#post-editor .custom-field-row');await rows.nth(0).locator('textarea').fill('Updated caption');
     await page.getByRole('button',{name:'添加字段',exact:true}).click();await rows.nth(2).locator('input').fill('second');await rows.nth(2).locator('textarea').fill('Added value');
     await page.getByRole('button',{name:'保存修改',exact:true}).click();await postRow('E2E 自定义字段').waitFor();
@@ -236,7 +266,7 @@ async function writePost(title,slug,content,status='published') {
     await preview.locator('.article-body').filter({hasText:'Private draft'}).waitFor();await preview.close();
   });
   await step('edit preserves permalink and restore revision',async()=>{
-    await page.goto(base+'/admin');await postRow('E2E 公开文章').getByRole('button',{name:'编辑',exact:true}).click();
+    await openAdminSection('文章');await postRow('E2E 公开文章').getByRole('button',{name:'编辑',exact:true}).click();
     await page.getByPlaceholder('文章标题',{exact:true}).fill('E2E 修改文章');
     await page.getByPlaceholder('开始写作，支持 Markdown…').fill('Revised body');
     await page.getByRole('button',{name:'保存修改',exact:true}).click();await postRow('E2E 修改文章').waitFor();
@@ -247,7 +277,7 @@ async function writePost(title,slug,content,status='published') {
     assert.ok((await api(publicCtx,'GET','/api/v1/content/posts/e2e-public')).content.includes('Original body'));
   });
   await step('page create, edit, public reading and delete',async()=>{
-    await page.goto(base+'/admin');await page.getByRole('button',{name:'+ 新建页面',exact:true}).click();
+    await openAdminSection('页面');await page.getByRole('button',{name:'+ 新建页面',exact:true}).click();
     await page.getByPlaceholder('页面标题',{exact:true}).fill('E2E 关于');
     await page.locator('#pages .editor-slug input').fill('e2e-about');
     await page.getByPlaceholder('页面内容，支持 Markdown…').fill('About version one');
@@ -267,7 +297,7 @@ async function writePost(title,slug,content,status='published') {
   await step('taxonomy rename keeps article associations',async()=>{
     const currentPost=await api(owner,'GET','/api/v1/content/posts/e2e-public');
     await api(owner,'PUT','/api/v1/content/posts/'+originalPost.id,{title:'E2E 公开文章',content:'Original body',status:'published',categories:['E2E 分类'],tags:['E2E 标签'],expectedUpdatedAt:currentPost.updatedAt});
-    await page.goto(base+'/admin');const row=page.locator('.taxonomy-row').filter({hasText:'E2E 分类'});await row.getByRole('button',{name:'重命名',exact:true}).click();
+    await openAdminSection('分类');const row=page.locator('.taxonomy-row').filter({hasText:'E2E 分类'});await row.getByRole('button',{name:'重命名',exact:true}).click();
     const editing=page.locator('.taxonomy-row').filter({has:page.locator('input')});
     await editing.locator('input').fill('E2E 新分类');await editing.getByRole('button',{name:'保存',exact:true}).click();
     await page.locator('.taxonomy-row').getByText('E2E 新分类',{exact:true}).waitFor();
@@ -380,7 +410,7 @@ async function writePost(title,slug,content,status='published') {
   });
   const gif=Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
   await step('media upload, insertion and image rendering',async()=>{
-    await page.goto(base+'/admin');await page.locator('#media').scrollIntoViewIfNeeded();const uploadInput=page.locator('#media input[type=file]');
+    await openAdminSection('媒体');await page.locator('#media').scrollIntoViewIfNeeded();const uploadInput=page.locator('#media input[type=file]');
     const positionedBeforeUpload=await page.evaluate(()=>{const target=document.querySelector('#media input[type=file]');const controls=Array.from(document.querySelectorAll('a[href],area[href],button:not([disabled]),input:not([type="hidden"]):not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(el=>el.tabIndex>=0&&el.getClientRects().length>0);const index=controls.indexOf(target);if(index<1)return false;controls[index-1].focus();return true;});
     assert.ok(positionedBeforeUpload,'the media file input should follow a tabbable control');await page.keyboard.press('Tab');assert.ok(await uploadInput.evaluate(el=>el===document.activeElement),'Tab should reach the media file input');
     const uploadFocus=await page.locator('#media .media-upload').evaluate(el=>({containsFocus:el.matches(':focus-within'),style:getComputedStyle(el).outlineStyle,width:getComputedStyle(el).outlineWidth}));assert.deepEqual(uploadFocus,{containsFocus:true,style:'solid',width:'2px'});
@@ -388,20 +418,22 @@ async function writePost(title,slug,content,status='published') {
     await uploadInput.setInputFiles({name:'e2e.gif',mimeType:'image/gif',buffer:gif});
     await page.waitForFunction(()=>Array.from(document.querySelectorAll('#media .media-card img')).some(i=>i.complete&&i.naturalWidth>0));
     uploaded=(await api(owner,'GET','/api/v1/media')).items[0];
-    await page.locator('#posts').getByRole('button',{name:'+ 写文章',exact:true}).click();
+    await openAdminSection('文章');await page.locator('#posts').getByRole('button',{name:'+ 写文章',exact:true}).click();
     const postContent=page.getByPlaceholder('开始写作，支持 Markdown…');await postContent.fill('Before\nAfter');
     await postContent.evaluate(el=>el.setSelectionRange(7,7));
-    await page.locator('#media .media-card').getByRole('button',{name:'插入文章',exact:true}).click();
+    await page.locator('#post-editor').getByRole('button',{name:'插入图片',exact:true}).click();
+    await page.locator('.media-picker-dialog .media-picker-item').filter({hasText:'e2e.gif'}).click();
     assert.equal(await postContent.inputValue(),'Before\n\n![图片说明]('+uploaded.url+')\n\nAfter');
     assert.equal(await postContent.evaluate(el=>el.value.slice(el.selectionStart,el.selectionEnd)),'图片说明');
     await page.locator('#post-editor').getByRole('button',{name:'看预览',exact:true}).click();
     const postPreview=page.locator('#post-editor .editor-preview img');await postPreview.waitFor();
     assert.equal(await postPreview.getAttribute('src'),uploaded.url);assert.equal(await postPreview.getAttribute('alt'),'图片说明');
     await page.locator('#posts').getByRole('button',{name:'关闭编辑器',exact:true}).click();
-    await page.locator('#pages').getByRole('button',{name:'+ 新建页面',exact:true}).click();
+    await openAdminSection('页面');await page.locator('#pages').getByRole('button',{name:'+ 新建页面',exact:true}).click();
     const pageContent=page.getByPlaceholder('页面内容，支持 Markdown…');await pageContent.fill('Before\nDELETE\nAfter');
     await pageContent.evaluate(el=>el.setSelectionRange(7,13));
-    await page.locator('#media .media-card').getByRole('button',{name:'插入页面',exact:true}).click();
+    await page.locator('#page-editor').getByRole('button',{name:'插入图片',exact:true}).click();
+    await page.locator('.media-picker-dialog .media-picker-item').filter({hasText:'e2e.gif'}).click();
     assert.equal(await pageContent.inputValue(),'Before\n\n![图片说明]('+uploaded.url+')\n\nAfter');
     await page.locator('#page-editor').getByRole('button',{name:'看预览',exact:true}).click();
     const pagePreview=page.locator('#page-editor .editor-preview img');await pagePreview.waitFor();
@@ -415,6 +447,21 @@ async function writePost(title,slug,content,status='published') {
     const imagePage=(await api(owner,'GET','/api/v1/content/pages?includeDraft=true&page=1&pageSize=100')).items.find(item=>item.slug==='e2e-markdown-image');
     assert.ok(imagePage);await api(owner,'DELETE','/api/v1/content/pages/'+imagePage.id,undefined,204);
     const response=await publicCtx.request.get(base+uploaded.url);assert.equal(response.status(),200);assert.deepEqual(await response.body(),gif);
+  });
+  await step('mobile admin navigation and content fit',async()=>{
+    const sections=[['概览','overview'],['文章','posts'],['页面','pages'],['评论','comments'],['媒体','media'],['分类','taxonomy'],['通知','mail']];
+    for(const width of [390,320]){
+      await page.setViewportSize({width,height:844});
+      for(const [name,id] of sections){
+        await openAdminSection(name);
+        const section=page.locator('#'+id);
+        await section.waitFor({state:'visible'});
+        assert.equal(await page.locator('.command-nav').getByRole('link',{name,exact:true}).getAttribute('aria-current'),'page');
+        assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'admin '+name+' overflows at '+width+'px');
+      }
+      if(width===390)await page.screenshot({path:path.join(artifacts,'mobile-admin.png'),fullPage:false});
+    }
+    await page.setViewportSize({width:1280,height:800});
   });
   await step('protected post hides body and supports password retry',async()=>{
     await api(owner,'POST','/api/v1/content/posts',{title:'E2E Protected',slug:'e2e-protected',content:'Protected secret body',status:'published',passphrase:'read-password-123',customFields:{secret:'Protected custom value'}},201);
@@ -434,7 +481,7 @@ async function writePost(title,slug,content,status='published') {
     await api(publicCtx,'POST','/api/v1/content/posts/e2e-public/comments',{authorName:'E2E 欺骗链接',authorUrl:'https://trusted.example@attacker.example',content:'Should be rejected'},422);
     await reader.goto(base+'/user/e2e-public');await reader.getByLabel('称呼',{exact:true}).fill('E2E 访客');await reader.getByLabel('评论',{exact:true}).fill('E2E 待审核评论');await reader.getByRole('button',{name:'发表评论',exact:true}).click();await reader.locator('.form-success').waitFor();
     assert.equal((await api(publicCtx,'GET','/api/v1/content/posts/e2e-public/comments')).total,0);
-    await page.goto(base+'/admin');const comments=page.locator('#comments');const row=comments.locator('.admin-comment-row').filter({hasText:'E2E 待审核评论'});await row.getByRole('button',{name:'通过',exact:true}).click();await row.waitFor({state:'detached'});
+    await openAdminSection('评论');const comments=page.locator('#comments');const row=comments.locator('.admin-comment-row').filter({hasText:'E2E 待审核评论'});await row.getByRole('button',{name:'通过',exact:true}).click();await row.waitFor({state:'detached'});
     const commentsRoute=/\/api\/v1\/content\/posts\/e2e-public\/comments\?/;
     await reader.route(commentsRoute,async route=>{const response=await route.fetch();const result=await response.json();const visitor=result.items.find(item=>item.authorName==='E2E 访客');if(visitor)visitor.authorUrl='https://trusted.example@attacker.example';await route.fulfill({response,body:JSON.stringify(result)});},{times:1});
     await reader.reload();const comment=reader.locator('.comment-card').filter({hasText:'E2E 待审核评论'});await comment.getByRole('button',{name:'回复',exact:true}).waitFor();
@@ -452,7 +499,7 @@ async function writePost(title,slug,content,status='published') {
   });
   await step('notification history pagination commits after its response',async()=>{
     for(let i=0;i<21;i++)await api(owner,'POST','/api/v1/content/posts/e2e-public/comments',{authorName:'E2E 通知分页',authorEmail:'mail-page@example.com',content:'Notification fixture '+i},202);
-    await page.goto(base+'/admin');const notifications=page.locator('#mail');const pager=notifications.locator('.pagination-controls');await pager.waitFor();
+    await openAdminSection('通知');const notifications=page.locator('#mail');const pager=notifications.locator('.pagination-controls');await pager.waitFor();
     const mailRoute=/\/api\/v1\/mail\?page=2&pageSize=20/;let releaseMailPage,signalMailPage,secondMailPage;
     const mailPageStarted=new Promise(resolve=>{signalMailPage=resolve});
     const holdMailPage=new Promise(resolve=>{releaseMailPage=resolve});
@@ -517,7 +564,7 @@ async function writePost(title,slug,content,status='published') {
   });
   await step('admin pagination beyond 100 and audit pagination',async()=>{
     for(let i=0;i<101;i++)await api(owner,'POST','/api/v1/content/posts',{title:'Paging fixture '+String(i).padStart(3,'0'),slug:'paging-'+i,content:'paging',status:'draft'},201);
-    await page.goto(base+'/admin');const posts=page.locator('#posts');await posts.getByRole('button',{name:'草稿',exact:true}).click();
+    await openAdminSection('文章');const posts=page.locator('#posts');await posts.getByRole('button',{name:'草稿',exact:true}).click();
     await page.waitForFunction(()=>{const rows=[...document.querySelectorAll('#posts .admin-post-row')];return rows.length>0&&rows.every(row=>row.querySelector('.post-status')?.classList.contains('draft'));});
     const draftPager=posts.locator('.pagination');const draftSummary=await draftPager.locator('span').innerText();const draftPages=draftSummary.match(/^1 \/ (\d+) · 共 (\d+) 篇$/);assert.ok(draftPages&&Number(draftPages[1])>=2&&Number(draftPages[2])>=101,'draft filter should report its own cross-page total');
     await draftPager.getByRole('button',{name:'下一页',exact:true}).click();await draftPager.locator('span').filter({hasText:/^2 \/ \d+/}).waitFor();
@@ -555,11 +602,13 @@ async function writePost(title,slug,content,status='published') {
     await page.locator('.settings-audit .audit-row').first().waitFor();
   });
   await step('dashboard keeps committed filters and ignores stale loads after logout',async()=>{
-    await page.goto(base+'/admin');await page.locator('.stats-grid').waitFor();
+    await openAdminSection('概览');await page.locator('.stats-grid').waitFor();
+    await openAdminSection('文章');
+    await page.locator('#posts .section-count').waitFor();
     const postsRoute=/\/api\/v1\/content\/posts\?/;
     await page.route(postsRoute,route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'test_failure',message:'temporary read failure'}})}),{times:1});
     await page.locator('#posts').getByRole('button',{name:'草稿',exact:true}).click();
-    await page.locator('.admin-main > .form-error').waitFor();
+    await page.getByText('temporary read failure',{exact:true}).waitFor();
     assert.equal(await page.locator('#posts .term-filter.active').innerText(),'全部','failed filter loads must keep the visible list filter');
     await page.unroute(postsRoute);
 
@@ -619,8 +668,9 @@ async function writePost(title,slug,content,status='published') {
     await api(publicCtx,'GET','/api/v1/content/posts/e2e-draft',undefined,404);
   });
   await step('delete post, media, taxonomy and staff through UI',async()=>{
-    await page.goto(base+'/admin');const row=postRow('E2E Search 2');await row.getByRole('button',{name:'删除',exact:true}).click();await row.waitFor({state:'detached'});await api(publicCtx,'GET','/api/v1/content/posts/e2e-search-2',undefined,404);
-    const asset=page.locator('.media-card').filter({hasText:'e2e.gif'});await asset.getByRole('button',{name:'删除',exact:true}).click();await asset.waitFor({state:'detached'});assert.equal((await publicCtx.request.get(base+uploaded.url)).status(),404);
+    await openAdminSection('文章');const row=postRow('E2E Search 2');await row.getByRole('button',{name:'删除',exact:true}).click();await row.waitFor({state:'detached'});await api(publicCtx,'GET','/api/v1/content/posts/e2e-search-2',undefined,404);
+    await openAdminSection('媒体');const asset=page.locator('.media-card').filter({hasText:'e2e.gif'});await asset.getByRole('button',{name:'删除',exact:true}).click();await asset.waitFor({state:'detached'});assert.equal((await publicCtx.request.get(base+uploaded.url)).status(),404);
+    await openAdminSection('分类');
     const taxonomy=page.locator('#taxonomy');const term=taxonomy.locator('.taxonomy-row').filter({hasText:'E2E 标签'});await taxonomy.locator('.taxonomy-row').first().waitFor();
     for(let pageNo=1;pageNo<20&&(await term.count())===0;pageNo++){const next=taxonomy.locator('.pagination').getByRole('button',{name:'下一页',exact:true});assert.ok(await next.isEnabled(),'target taxonomy should exist on a later page');await next.click();await page.waitForFunction(expected=>document.querySelector('#taxonomy .pagination span')?.textContent?.startsWith(expected),`${pageNo+1} /`);}
     await term.getByRole('button',{name:'删除',exact:true}).click();await term.waitFor({state:'detached'});assert.equal(((await api(publicCtx,'GET','/api/v1/content/posts/e2e-public')).tags||[]).length,0);
@@ -637,7 +687,7 @@ async function writePost(title,slug,content,status='published') {
     await reader.keyboard.press('Escape');assert.equal(await menuToggle.getAttribute('aria-expanded'),'false');assert.ok(await menuToggle.evaluate(el=>el===document.activeElement),'Escape should restore focus to the mobile menu toggle');
     await menuToggle.click();await railClose.waitFor();await railClose.click();assert.equal(await menuToggle.getAttribute('aria-expanded'),'false');assert.ok(await menuToggle.evaluate(el=>el===document.activeElement),'the dialog close button should restore focus to its toggle');
     await menuToggle.click();await tabToRailLink();await reader.locator('.rail-backdrop').click({position:{x:2,y:300}});assert.equal(await menuToggle.getAttribute('aria-expanded'),'false');assert.ok(await menuToggle.evaluate(el=>el===document.activeElement),'closing the mobile menu backdrop should restore focus to its toggle');
-    await reader.screenshot({path:path.join(artifacts,'mobile-reader.png'),fullPage:true});await page.screenshot({path:path.join(artifacts,'admin.png'),fullPage:true});assert.deepEqual(errors,[]);
+    await reader.screenshot({path:path.join(artifacts,'mobile-reader.png'),fullPage:true});await page.goto(base+'/admin');await page.locator('.stats-grid').waitFor();await page.screenshot({path:path.join(artifacts,'admin.png'),fullPage:true});assert.deepEqual(errors,[]);
   });
 })().catch(async error=>{
   console.error(error);process.exitCode=1;
@@ -647,4 +697,5 @@ async function writePost(title,slug,content,status='published') {
   await fs.mkdir(artifacts,{recursive:true});
   await fs.writeFile(path.join(artifacts,'report.json'),JSON.stringify({date:new Date().toISOString(),platform:process.platform,scratch,results,browserErrors:errors},null,2));
   console.log(`${results.filter(r=>r.status==='passed').length}/${results.length} passed; report: ${path.join(artifacts,'report.json')}`);
+  if(scratch)await fs.rm(scratch,{recursive:true,force:true,maxRetries:3,retryDelay:100});
 });

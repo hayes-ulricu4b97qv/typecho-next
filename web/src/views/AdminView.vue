@@ -28,13 +28,16 @@ import { setDocumentMeta } from '../meta'
 import { renderMarkdown } from '../markdown'
 import { getDashboardStats } from '../api/settings'
 import AdminNotifications from './AdminNotifications.vue'
+import MediaPicker from './MediaPicker.vue'
 import type { Comment, Media, Page, Post, Stats, Status, Term, User } from '../types'
 
 type DashboardPageKey = 'posts' | 'pages' | 'comments' | 'media' | 'terms'
 type DashboardPageOverrides = Partial<Record<DashboardPageKey, number>>
+type AdminSection = 'overview' | 'posts' | 'pages' | 'comments' | 'media' | 'taxonomy' | 'mail'
 type DashboardLoadOverrides = DashboardPageOverrides & {
   postFilter?: 'all' | 'published' | 'draft'
   commentStatus?: 'pending' | 'approved' | 'spam'
+  scope?: AdminSection
 }
 type PageResult<T> = { items: T[]; total: number; page: number; pageSize: number }
 type MarkdownAction = 'heading' | 'bold' | 'italic' | 'link' | 'image' | 'quote' | 'list' | 'code' | 'rule'
@@ -46,6 +49,12 @@ type BackupFilePickerWindow = Window & {
   }) => Promise<BackupFileHandle>
 }
 const canStreamBackup = typeof window !== 'undefined' && typeof (window as BackupFilePickerWindow).showSaveFilePicker === 'function'
+const adminSections: AdminSection[] = ['overview', 'posts', 'pages', 'comments', 'media', 'taxonomy', 'mail']
+
+function sectionFromHash(): AdminSection {
+  const section = window.location.hash.slice(1)
+  return adminSections.includes(section as AdminSection) ? section as AdminSection : 'overview'
+}
 
 async function reloadLastPageIfNeeded<T>(response: PageResult<T>, loadPage: (page: number) => Promise<PageResult<T>>) {
   const lastPage = Math.max(1, Math.ceil(response.total / response.pageSize))
@@ -72,6 +81,7 @@ const commentStatus = ref<'pending' | 'approved' | 'spam'>('pending')
 const media = ref<Media[]>([])
 const mediaPage = ref(1)
 const mediaTotal = ref(0)
+const mediaPickerTarget = ref<'post' | 'page' | null>(null)
 const terms = ref<Term[]>([])
 const termPage = ref(1)
 const termTotal = ref(0)
@@ -85,19 +95,26 @@ const loginForm = reactive({ username: '', password: '' })
 const loginError = ref('')
 const loginLoading = ref(false)
 const showEditor = ref(false)
+const postSaving = ref(false)
 const editor = reactive({ title: '', slug: '', excerpt: '', content: '', categories: '', tags: '', allowComment: true, status: 'draft' as 'draft' | 'published', publishAt: '', passphrase: '' })
 const customFieldRows = ref<Array<{ key: string; value: string }>>([])
+const postEditorBaseline = ref('')
+const postEditorDirty = computed(() => showEditor.value && postEditorBaseline.value !== snapshotPostEditor())
 const revisions = ref<PostRevisionSummary[]>([])
 const revisionsPage = ref(0)
 const revisionsTotal = ref(0)
 const revisionsLoading = ref(false)
+const revisionRestoring = ref(false)
 const postContentInput = ref<HTMLTextAreaElement | null>(null)
 const previewHTML = computed(() => renderMarkdown(editor.content || ''))
 const editorError = ref('')
 const editingId = ref<string | null>(null)
 const editingPostUpdatedAt = ref<string | null>(null)
 const showPageEditor = ref(false)
+const pageSaving = ref(false)
 const pageEditor = reactive({ title: '', slug: '', excerpt: '', content: '', status: 'draft' as 'draft' | 'published' })
+const pageEditorBaseline = ref('')
+const pageEditorDirty = computed(() => showPageEditor.value && pageEditorBaseline.value !== snapshotPageEditor())
 const pageContentInput = ref<HTMLTextAreaElement | null>(null)
 const pagePreviewHTML = computed(() => renderMarkdown(pageEditor.content || ''))
 const pageEditorError = ref('')
@@ -114,12 +131,11 @@ const termSubmitting = ref(false)
 const termActionId = ref<string | null>(null)
 const renamingId = ref<string | null>(null)
 const renameValue = ref('')
+const activeSection = ref<AdminSection>(sectionFromHash())
 const showReset = ref(false)
 const showPreview = ref(false)
 const showPagePreview = ref(false)
 const postListFilter = ref<'all' | 'published' | 'draft'>('all')
-const activeAnchor = ref('overview')
-let sectionObserver: IntersectionObserver | undefined
 let revisionRequestGeneration = 0
 let dashboardLoadGeneration = 0
 let lastDashboardLoadOverrides: DashboardLoadOverrides = {}
@@ -130,6 +146,48 @@ const forgotMessage = ref('')
 const canEditContent = computed(() => user.value?.role === 'owner' || user.value?.role === 'editor')
 const canModerateComments = computed(() => user.value?.role === 'owner' || user.value?.role === 'moderator')
 const visiblePosts = computed(() => posts.value)
+function canVisitSection(section: AdminSection) {
+  if (section === 'overview') return true
+  if (section === 'comments') return canModerateComments.value
+  if (section === 'mail') return user.value?.role === 'owner'
+  return canEditContent.value
+}
+
+function scopeFromOverrides(overrides: DashboardLoadOverrides): AdminSection | undefined {
+  if (overrides.scope) return overrides.scope
+  if (overrides.posts !== undefined || overrides.postFilter !== undefined) return 'posts'
+  if (overrides.pages !== undefined) return 'pages'
+  if (overrides.comments !== undefined || overrides.commentStatus !== undefined) return 'comments'
+  if (overrides.media !== undefined) return 'media'
+  if (overrides.terms !== undefined) return 'taxonomy'
+  return undefined
+}
+
+function updateSectionURL(section: AdminSection, replace = false) {
+  const path = `${window.location.pathname}${window.location.search}#${section}`
+  const method = replace ? 'replaceState' : 'pushState'
+  window.history[method](window.history.state, '', path)
+}
+
+function onAdminHistoryChange() {
+  const requestedSection = sectionFromHash()
+  const section = canVisitSection(requestedSection) ? requestedSection : 'overview'
+  activeSection.value = section
+  if (section !== requestedSection) updateSectionURL(section, true)
+  window.scrollTo({ top: 0, behavior: 'auto' })
+  if (user.value) void loadDashboard({ scope: section })
+}
+
+function navigateAdminSection(section: AdminSection, event: MouseEvent) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  if (!canVisitSection(section)) return
+  activeSection.value = section
+  updateSectionURL(section)
+  window.scrollTo({ top: 0, behavior: 'auto' })
+  void loadDashboard({ scope: section })
+}
+
 const markdownActions: Array<{ command: MarkdownAction; label: string; title: string }> = [
   { command: 'heading', label: 'H2', title: '插入二级标题' },
   { command: 'bold', label: '粗体', title: '插入粗体文字' },
@@ -142,11 +200,19 @@ const markdownActions: Array<{ command: MarkdownAction; label: string; title: st
   { command: 'rule', label: '分隔线', title: '插入分隔线' },
 ]
 
+function snapshotPostEditor() {
+  return JSON.stringify({ ...editor, customFields: customFieldRows.value })
+}
+
+function snapshotPageEditor() {
+  return JSON.stringify(pageEditor)
+}
+
 function insertMarkdown(
   value: string,
   target: HTMLTextAreaElement | null,
   update: (next: string) => void,
-  action: MarkdownAction,
+  action: Exclude<MarkdownAction, 'image'>,
 ) {
   const start = target?.selectionStart ?? value.length
   const end = target?.selectionEnd ?? start
@@ -173,11 +239,10 @@ function insertMarkdown(
       selectionEnd = selectionStart + placeholder.length
     }
   } else {
-    const formats: Record<Exclude<MarkdownAction, 'heading' | 'quote' | 'list' | 'rule'>, { before: string; after: string; placeholder: string }> = {
+    const formats: Record<Exclude<MarkdownAction, 'heading' | 'quote' | 'list' | 'image' | 'rule'>, { before: string; after: string; placeholder: string }> = {
       bold: { before: '**', after: '**', placeholder: '粗体文字' },
       italic: { before: '*', after: '*', placeholder: '斜体文字' },
       link: { before: '[', after: '](https://example.com)', placeholder: '链接文字' },
-      image: { before: '![', after: '](图片地址)', placeholder: '替代文字' },
       code: { before: '```\n', after: '\n```', placeholder: '代码' },
     }
     const format = formats[action]
@@ -188,9 +253,6 @@ function insertMarkdown(
     if (action === 'link') {
       selectionStart = start + format.before.length + content.length + 2
       selectionEnd = selectionStart + 'https://example.com'.length
-    } else if (action === 'image') {
-      selectionStart = start + format.before.length + content.length + 2
-      selectionEnd = selectionStart + '图片地址'.length
     }
   }
 
@@ -203,10 +265,18 @@ function insertMarkdown(
 }
 
 function formatPost(action: MarkdownAction) {
+  if (action === 'image') {
+    mediaPickerTarget.value = 'post'
+    return
+  }
   insertMarkdown(editor.content, postContentInput.value, (content) => { editor.content = content }, action)
 }
 
 function formatPage(action: MarkdownAction) {
+  if (action === 'image') {
+    mediaPickerTarget.value = 'page'
+    return
+  }
   insertMarkdown(pageEditor.content, pageContentInput.value, (content) => { pageEditor.content = content }, action)
 }
 
@@ -219,9 +289,8 @@ function clearAdminSessionState(loginMessage = '') {
   sessionGeneration.value++
   dashboardLoadGeneration++
   revisionRequestGeneration++
-  sectionObserver?.disconnect()
-  sectionObserver = undefined
   user.value = null
+  activeSection.value = 'overview'
   sessionChecking.value = false
   stats.value = { posts: 0, publishedPosts: 0, drafts: 0, comments: 0, pendingComments: 0 }
   posts.value = []
@@ -238,14 +307,15 @@ function clearAdminSessionState(loginMessage = '') {
   media.value = []
   mediaPage.value = 1
   mediaTotal.value = 0
+  mediaPickerTarget.value = null
   terms.value = []
   termPage.value = 1
   termTotal.value = 0
   loading.value = false
   error.value = ''
   dashboardLoadError.value = ''
-  cancelEditor()
-  cancelPageEditor()
+  cancelEditor(true)
+  cancelPageEditor(true)
   commentError.value = ''
   commentActionId.value = null
   mediaError.value = ''
@@ -258,7 +328,6 @@ function clearAdminSessionState(loginMessage = '') {
   renamingId.value = null
   renameValue.value = ''
   showReset.value = false
-  activeAnchor.value = 'overview'
   lastDashboardLoadOverrides = {}
   loginForm.password = ''
   loginError.value = loginMessage
@@ -300,15 +369,6 @@ async function loadDashboard(overrides: DashboardLoadOverrides = {}) {
   const requestSession = sessionGeneration.value
   const generation = ++dashboardLoadGeneration
   lastDashboardLoadOverrides = { ...overrides }
-  const requestedPages: Record<DashboardPageKey, number> = {
-    posts: overrides.posts ?? postPage.value,
-    pages: overrides.pages ?? pagePage.value,
-    comments: overrides.comments ?? commentPage.value,
-    media: overrides.media ?? mediaPage.value,
-    terms: overrides.terms ?? termPage.value,
-  }
-  const requestedPostFilter = overrides.postFilter ?? postListFilter.value
-  const requestedCommentStatus = overrides.commentStatus ?? commentStatus.value
   loading.value = true
   error.value = ''
   dashboardLoadError.value = ''
@@ -316,44 +376,72 @@ async function loadDashboard(overrides: DashboardLoadOverrides = {}) {
     const me = await getCurrentUser()
     if (generation !== dashboardLoadGeneration) return
     user.value = me.user
+    const requestedScope = scopeFromOverrides(overrides) ?? sectionFromHash()
+    const scope = canVisitSection(requestedScope) ? requestedScope : 'overview'
+    activeSection.value = scope
+    if (scope !== requestedScope) updateSectionURL(scope, true)
+    const requestedPages: Record<DashboardPageKey, number> = {
+      posts: overrides.posts ?? postPage.value,
+      pages: overrides.pages ?? pagePage.value,
+      comments: overrides.comments ?? commentPage.value,
+      media: overrides.media ?? mediaPage.value,
+      terms: overrides.terms ?? termPage.value,
+    }
+    const requestedPostFilter = overrides.postFilter ?? postListFilter.value
+    const requestedCommentStatus = overrides.commentStatus ?? commentStatus.value
     const canEdit = me.user.role === 'owner' || me.user.role === 'editor'
     const canModerate = me.user.role === 'owner' || me.user.role === 'moderator'
     const effectivePostFilter = canEdit ? requestedPostFilter : 'all'
+    const loadsPosts = canEdit && scope === 'posts'
+    const loadsPages = canEdit && scope === 'pages'
+    const loadsComments = canModerate && scope === 'comments'
+    const loadsMedia = canEdit && scope === 'media'
+    const loadsTerms = canEdit && scope === 'taxonomy'
     const blank = <T,>() => ({ items: [] as T[], total: 0, page: 1, pageSize: adminPageSize })
     const [summary, initialPostResponse, initialPageResponse, initialCommentResponse, initialMediaResponse, initialTermResponse] = await Promise.all([
       getDashboardStats(),
-      canEdit ? listPosts({ includeDraft: true, status: effectivePostFilter === 'all' ? undefined : effectivePostFilter, page: requestedPages.posts, pageSize: adminPageSize }) : Promise.resolve(blank<Post>()),
-      canEdit ? listPages(true, requestedPages.pages, adminPageSize) : Promise.resolve(blank<Page>()),
-      canModerate ? listModerationComments(requestedCommentStatus, requestedPages.comments, adminPageSize) : Promise.resolve(blank<Comment>()),
-      canEdit ? listMedia(requestedPages.media, adminPageSize) : Promise.resolve(blank<Media>()),
-      canEdit ? listTerms(true, requestedPages.terms, adminPageSize) : Promise.resolve(blank<Term>()),
+      loadsPosts ? listPosts({ includeDraft: true, status: effectivePostFilter === 'all' ? undefined : effectivePostFilter, page: requestedPages.posts, pageSize: adminPageSize }) : Promise.resolve(blank<Post>()),
+      loadsPages ? listPages(true, requestedPages.pages, adminPageSize) : Promise.resolve(blank<Page>()),
+      loadsComments ? listModerationComments(requestedCommentStatus, requestedPages.comments, adminPageSize) : Promise.resolve(blank<Comment>()),
+      loadsMedia ? listMedia(requestedPages.media, adminPageSize) : Promise.resolve(blank<Media>()),
+      loadsTerms ? listTerms(true, requestedPages.terms, adminPageSize) : Promise.resolve(blank<Term>()),
     ])
     const [postResponse, pageResponse, commentResponse, mediaResponse, termResponse] = await Promise.all([
-      canEdit ? reloadLastPageIfNeeded(initialPostResponse, (page) => listPosts({ includeDraft: true, status: effectivePostFilter === 'all' ? undefined : effectivePostFilter, page, pageSize: adminPageSize })) : Promise.resolve(initialPostResponse),
-      canEdit ? reloadLastPageIfNeeded(initialPageResponse, (page) => listPages(true, page, adminPageSize)) : Promise.resolve(initialPageResponse),
-      canModerate ? reloadLastPageIfNeeded(initialCommentResponse, (page) => listModerationComments(requestedCommentStatus, page, adminPageSize)) : Promise.resolve(initialCommentResponse),
-      canEdit ? reloadLastPageIfNeeded(initialMediaResponse, (page) => listMedia(page, adminPageSize)) : Promise.resolve(initialMediaResponse),
-      canEdit ? reloadLastPageIfNeeded(initialTermResponse, (page) => listTerms(true, page, adminPageSize)) : Promise.resolve(initialTermResponse),
+      loadsPosts ? reloadLastPageIfNeeded(initialPostResponse, (page) => listPosts({ includeDraft: true, status: effectivePostFilter === 'all' ? undefined : effectivePostFilter, page, pageSize: adminPageSize })) : Promise.resolve(initialPostResponse),
+      loadsPages ? reloadLastPageIfNeeded(initialPageResponse, (page) => listPages(true, page, adminPageSize)) : Promise.resolve(initialPageResponse),
+      loadsComments ? reloadLastPageIfNeeded(initialCommentResponse, (page) => listModerationComments(requestedCommentStatus, page, adminPageSize)) : Promise.resolve(initialCommentResponse),
+      loadsMedia ? reloadLastPageIfNeeded(initialMediaResponse, (page) => listMedia(page, adminPageSize)) : Promise.resolve(initialMediaResponse),
+      loadsTerms ? reloadLastPageIfNeeded(initialTermResponse, (page) => listTerms(true, page, adminPageSize)) : Promise.resolve(initialTermResponse),
     ])
     if (generation !== dashboardLoadGeneration) return
     stats.value = summary
-    posts.value = postResponse.items
-    postListFilter.value = effectivePostFilter
-    postPage.value = postResponse.page
-    postTotal.value = postResponse.total
-    pages.value = pageResponse.items
-    pagePage.value = pageResponse.page
-    pageTotal.value = pageResponse.total
-    moderationComments.value = commentResponse.items
-    commentStatus.value = requestedCommentStatus
-    commentPage.value = commentResponse.page
-    commentTotal.value = commentResponse.total
-    media.value = mediaResponse.items
-    mediaPage.value = mediaResponse.page
-    mediaTotal.value = mediaResponse.total
-    terms.value = termResponse.items
-    termPage.value = termResponse.page
-    termTotal.value = termResponse.total
+    if (loadsPosts) {
+      posts.value = postResponse.items
+      postListFilter.value = effectivePostFilter
+      postPage.value = postResponse.page
+      postTotal.value = postResponse.total
+    }
+    if (loadsPages) {
+      pages.value = pageResponse.items
+      pagePage.value = pageResponse.page
+      pageTotal.value = pageResponse.total
+    }
+    if (loadsComments) {
+      moderationComments.value = commentResponse.items
+      commentStatus.value = requestedCommentStatus
+      commentPage.value = commentResponse.page
+      commentTotal.value = commentResponse.total
+    }
+    if (loadsMedia) {
+      media.value = mediaResponse.items
+      mediaPage.value = mediaResponse.page
+      mediaTotal.value = mediaResponse.total
+    }
+    if (loadsTerms) {
+      terms.value = termResponse.items
+      termPage.value = termResponse.page
+      termTotal.value = termResponse.total
+    }
   } catch (reason) {
     if (generation !== dashboardLoadGeneration) return
     if (handleAdminRequestFailure(reason, requestSession)) return
@@ -365,27 +453,10 @@ async function loadDashboard(overrides: DashboardLoadOverrides = {}) {
   } finally {
     if (generation === dashboardLoadGeneration) loading.value = false
   }
-  if (generation === dashboardLoadGeneration && user.value) await bindSections(generation)
 }
 
 function retryDashboard() {
   void loadDashboard(lastDashboardLoadOverrides)
-}
-
-function bindSections(generation: number) {
-  sectionObserver?.disconnect()
-  return nextTick(() => {
-    if (generation !== dashboardLoadGeneration || !user.value) return
-    const nodes = ['overview', 'posts', 'pages', 'comments', 'media', 'taxonomy', 'mail']
-      .map((id) => document.getElementById(id))
-      .filter((node): node is HTMLElement => node instanceof HTMLElement)
-    if (nodes.length === 0) return
-    sectionObserver = new IntersectionObserver((entries) => {
-      const visible = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
-      if (visible?.target instanceof HTMLElement && visible.target.id) activeAnchor.value = visible.target.id
-    }, { rootMargin: '-30% 0px -55% 0px', threshold: [0.15, 0.4] })
-    for (const node of nodes) sectionObserver.observe(node)
-  })
 }
 
 async function login() {
@@ -409,6 +480,7 @@ async function login() {
 }
 
 async function logout() {
+  if ((postEditorDirty.value || pageEditorDirty.value) && !window.confirm('当前有尚未保存的内容。退出登录会放弃这些更改，是否继续？')) return
   clearAdminSessionState()
   const logoutSession = sessionGeneration.value
   try {
@@ -424,6 +496,18 @@ async function logout() {
 function onPageShow(event: PageTransitionEvent) {
   if (!event.persisted || !user.value) return
   revalidateAdminSession(sessionGeneration.value)
+}
+
+function onBeforeUnload(event: BeforeUnloadEvent) {
+  if (!postEditorDirty.value && !pageEditorDirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+function submitEditorShortcut(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's' || event.isComposing || event.repeat) return
+  event.preventDefault()
+  ;(event.currentTarget as HTMLFormElement).requestSubmit()
 }
 
 async function downloadBackup() {
@@ -508,6 +592,9 @@ async function switchCommentStatus(status: 'pending' | 'approved' | 'spam') {
 }
 
 async function startEdit(post: Post) {
+  if (postSaving.value) return
+  if (postEditorDirty.value && !window.confirm('文章有尚未保存的更改。继续编辑其他文章会放弃这些更改，是否继续？')) return
+  if (showEditor.value) cancelEditor(true)
   const requestSession = sessionGeneration.value
   const generation = ++revisionRequestGeneration
   editingPostUpdatedAt.value = null
@@ -534,6 +621,7 @@ async function startEdit(post: Post) {
       passphrase: '',
     })
     customFieldRows.value = Object.entries(full.customFields ?? {}).map(([key, value]) => ({ key, value }))
+    postEditorBaseline.value = snapshotPostEditor()
     const history = await listRevisions(full.id)
     if (generation !== revisionRequestGeneration) return
     revisions.value = history.items
@@ -548,11 +636,13 @@ async function startEdit(post: Post) {
     if (generation !== revisionRequestGeneration) return
     if (handleAdminRequestFailure(reason, requestSession)) return
     editorError.value = reason instanceof ApiError ? reason.message : '无法打开文章'
+    postEditorBaseline.value = snapshotPostEditor()
     showEditor.value = true
   }
 }
 
 async function toggleEditor() {
+  if (postSaving.value) return
   if (showEditor.value) {
     cancelEditor()
     return
@@ -565,6 +655,7 @@ async function toggleEditor() {
   revisionsPage.value = 0
   revisionsTotal.value = 0
   revisionsLoading.value = false
+  postEditorBaseline.value = snapshotPostEditor()
   showEditor.value = true
   showPreview.value = false
   await nextTick()
@@ -572,7 +663,24 @@ async function toggleEditor() {
   document.querySelector<HTMLInputElement>('#post-editor .editor-title')?.focus({ preventScroll: true })
 }
 
-function cancelEditor() {
+async function startPostFromOverview() {
+  if (!canEditContent.value || postSaving.value) return
+  activeSection.value = 'posts'
+  updateSectionURL('posts')
+  window.scrollTo({ top: 0, behavior: 'auto' })
+  void loadDashboard({ scope: 'posts' })
+  if (!showEditor.value) {
+    await toggleEditor()
+    return
+  }
+  await nextTick()
+  document.getElementById('post-editor')?.scrollIntoView({ block: 'start', behavior: 'auto' })
+  document.querySelector<HTMLInputElement>('#post-editor .editor-title')?.focus({ preventScroll: true })
+}
+
+function cancelEditor(force = false) {
+  if (postSaving.value && !force) return false
+  if (!force && postEditorDirty.value && !window.confirm('文章有尚未保存的更改。确定放弃吗？')) return false
   revisionRequestGeneration++
   editingId.value = null
   editingPostUpdatedAt.value = null
@@ -585,6 +693,8 @@ function cancelEditor() {
   customFieldRows.value = []
   Object.assign(editor, { title: '', slug: '', excerpt: '', content: '', categories: '', tags: '', allowComment: true, status: 'draft', publishAt: '', passphrase: '' })
   editorError.value = ''
+  postEditorBaseline.value = snapshotPostEditor()
+  return true
 }
 
 function addCustomField() {
@@ -614,10 +724,12 @@ function collectCustomFields() {
 }
 
 async function publish() {
+  if (postSaving.value) return
   const requestSession = sessionGeneration.value
   editorError.value = ''
   const customFields = collectCustomFields()
   if (!customFields) return
+  postSaving.value = true
   const postId = editingId.value
   try {
     const payload = {
@@ -644,18 +756,24 @@ async function publish() {
       await savePost(null, payload)
     }
     if (requestSession !== sessionGeneration.value) return
-    cancelEditor()
+    cancelEditor(true)
     await loadDashboard()
   } catch (reason) {
     if (handleAdminRequestFailure(reason, requestSession)) return
     editorError.value = reason instanceof ApiError ? reason.message : '发布失败'
+  } finally {
+    postSaving.value = false
   }
 }
 
 function startPageEdit(page: Page) {
+  if (pageSaving.value) return
+  if (pageEditorDirty.value && !window.confirm('页面有尚未保存的更改。继续编辑其他页面会放弃这些更改，是否继续？')) return
+  if (showPageEditor.value) cancelPageEditor(true)
   editingPageId.value = page.id
   editingPageUpdatedAt.value = page.updatedAt
   Object.assign(pageEditor, { title: page.title, slug: page.slug, excerpt: page.excerpt, content: page.content, status: page.status })
+  pageEditorBaseline.value = snapshotPageEditor()
   pageEditorError.value = ''
   showPageEditor.value = true
   showPagePreview.value = false
@@ -666,11 +784,13 @@ function startPageEdit(page: Page) {
 }
 
 async function togglePageEditor() {
+  if (pageSaving.value) return
   if (showPageEditor.value) {
     cancelPageEditor()
     return
   }
   editingPageUpdatedAt.value = null
+  pageEditorBaseline.value = snapshotPageEditor()
   showPageEditor.value = true
   showPagePreview.value = false
   await nextTick()
@@ -678,16 +798,22 @@ async function togglePageEditor() {
   document.querySelector<HTMLInputElement>('#page-editor .editor-title')?.focus({ preventScroll: true })
 }
 
-function cancelPageEditor() {
+function cancelPageEditor(force = false) {
+  if (pageSaving.value && !force) return false
+  if (!force && pageEditorDirty.value && !window.confirm('页面有尚未保存的更改。确定放弃吗？')) return false
   editingPageId.value = null
   editingPageUpdatedAt.value = null
   showPageEditor.value = false
   showPagePreview.value = false
   Object.assign(pageEditor, { title: '', slug: '', excerpt: '', content: '', status: 'draft' })
   pageEditorError.value = ''
+  pageEditorBaseline.value = snapshotPageEditor()
+  return true
 }
 
 async function savePage() {
+  if (pageSaving.value) return
+  pageSaving.value = true
   const requestSession = sessionGeneration.value
   pageEditorError.value = ''
   const pageId = editingPageId.value
@@ -710,11 +836,13 @@ async function savePage() {
       await savePageRequest(null, payload)
     }
     if (requestSession !== sessionGeneration.value) return
-    cancelPageEditor()
+    cancelPageEditor(true)
     await loadDashboard()
   } catch (reason) {
     if (handleAdminRequestFailure(reason, requestSession)) return
     pageEditorError.value = reason instanceof ApiError ? reason.message : '保存页面失败'
+  } finally {
+    pageSaving.value = false
   }
 }
 
@@ -826,7 +954,7 @@ async function removeMedia(asset: Media) {
   }
 }
 
-function insertBlockAtSelection(content: string, start: number, end: number, block: string) {
+function insertBlockAtSelection(content: string, start: number, end: number, block: string, selectedTextLength = 4) {
   const before = content.slice(0, start)
   const after = content.slice(end)
   const prefix = before.length === 0 ? '' : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n'
@@ -834,16 +962,17 @@ function insertBlockAtSelection(content: string, start: number, end: number, blo
   return {
     content: before + prefix + block + suffix + after,
     selectionStart: before.length + prefix.length + 2,
-    selectionEnd: before.length + prefix.length + 6,
+    selectionEnd: before.length + prefix.length + 2 + selectedTextLength,
   }
 }
 
-function insertMedia(asset: Media, target: 'post' | 'page' = 'post') {
+function insertMedia(asset: Media, target: 'post' | 'page' = 'post', altText = '图片说明') {
   const input = target === 'post' ? postContentInput.value : pageContentInput.value
   const current = target === 'post' ? editor.content : pageEditor.content
   const start = input?.selectionStart ?? current.length
   const end = input?.selectionEnd ?? start
-  const insertion = insertBlockAtSelection(current, start, end, '![图片说明](' + asset.url + ')')
+  const safeAltText = altText.trim().replace(/[\\\]]/g, '\\$&') || '图片说明'
+  const insertion = insertBlockAtSelection(current, start, end, `![${safeAltText}](${asset.url})`, safeAltText.length)
 
   if (target === 'post') {
     editor.content = insertion.content
@@ -863,21 +992,35 @@ function insertMedia(asset: Media, target: 'post' | 'page' = 'post') {
   })
 }
 
+function onMediaPicked(selection: { asset: Media; altText: string }) {
+  const target = mediaPickerTarget.value
+  mediaPickerTarget.value = null
+  if (target) insertMedia(selection.asset, target, selection.altText)
+}
+
 async function restore(revision: PostRevisionSummary) {
   const requestSession = sessionGeneration.value
   const postId = editingId.value
-  if (!postId) return
+  if (!postId || revisionRestoring.value) return
+  if (postEditorDirty.value && !window.confirm('文章有尚未保存的更改。恢复此版本会覆盖这些更改，是否继续？')) return
   const generation = ++revisionRequestGeneration
+  const pendingSnapshot = snapshotPostEditor()
   revisionsLoading.value = false
+  revisionRestoring.value = true
   editorError.value = ''
   try {
     const restored = await restoreRevision(postId, revision.id)
     if (generation !== revisionRequestGeneration || editingId.value !== postId) return
     editingPostUpdatedAt.value = restored.updatedAt
-    editor.title = restored.title
-    editor.excerpt = restored.excerpt
-    editor.content = restored.content ?? ''
-    customFieldRows.value = Object.entries(restored.customFields ?? {}).map(([key, value]) => ({ key, value }))
+    if (snapshotPostEditor() === pendingSnapshot) {
+      editor.title = restored.title
+      editor.excerpt = restored.excerpt
+      editor.content = restored.content ?? ''
+      customFieldRows.value = Object.entries(restored.customFields ?? {}).map(([key, value]) => ({ key, value }))
+      postEditorBaseline.value = snapshotPostEditor()
+    } else {
+      editorError.value = '修订版本已恢复；恢复期间的新编辑仍未保存。'
+    }
     const history = await listRevisions(postId)
     if (generation !== revisionRequestGeneration || editingId.value !== postId) return
     revisions.value = history.items
@@ -887,6 +1030,8 @@ async function restore(revision: PostRevisionSummary) {
     if (generation !== revisionRequestGeneration) return
     if (handleAdminRequestFailure(reason, requestSession)) return
     editorError.value = reason instanceof ApiError ? reason.message : '恢复版本失败'
+  } finally {
+    revisionRestoring.value = false
   }
 }
 
@@ -1007,6 +1152,8 @@ async function removeTerm(term: Term) {
 
 onMounted(async () => {
   window.addEventListener('pageshow', onPageShow)
+  window.addEventListener('beforeunload', onBeforeUnload)
+  window.addEventListener('popstate', onAdminHistoryChange)
   const site = props.status.site
   setDocumentMeta(site?.name ? `${site.name} · 管理` : '管理', site?.description ?? '', site?.keywords ?? '')
   await loadDashboard()
@@ -1018,8 +1165,9 @@ onUnmounted(() => {
   sessionGeneration.value++
   dashboardLoadGeneration++
   revisionRequestGeneration++
-  sectionObserver?.disconnect()
+  window.removeEventListener('popstate', onAdminHistoryChange)
   window.removeEventListener('pageshow', onPageShow)
+  window.removeEventListener('beforeunload', onBeforeUnload)
 })
 </script>
 
@@ -1027,16 +1175,6 @@ onUnmounted(() => {
   <div class="admin-shell" :class="{ 'is-guest': !user }">
     <header class="admin-command">
       <a class="brand" href="/user"><span class="brand-mark">{{ status.site?.name?.trim().slice(0, 1) || '博' }}</span><span class="brand-name">{{ status.site?.name ?? '博客' }}</span></a>
-      <nav v-if="user" class="command-nav" aria-label="管理分区">
-        <a href="#overview" :class="{ active: activeAnchor === 'overview' }">概览</a>
-        <a href="#posts" :class="{ active: activeAnchor === 'posts' }">文章</a>
-        <a v-if="canEditContent" href="#pages" :class="{ active: activeAnchor === 'pages' }">页面</a>
-        <a v-if="canModerateComments" href="#comments" :class="{ active: activeAnchor === 'comments' }">评论</a>
-        <a v-if="canEditContent" href="#media" :class="{ active: activeAnchor === 'media' }">媒体</a>
-        <a v-if="canEditContent" href="#taxonomy" :class="{ active: activeAnchor === 'taxonomy' }">分类</a>
-        <a v-if="user.role === 'owner'" href="#mail" :class="{ active: activeAnchor === 'mail' }">通知</a>
-        <a v-if="user.role === 'owner'" href="/setting">设置</a>
-      </nav>
       <div class="top-actions">
         <button v-if="user?.role === 'owner' && canStreamBackup" class="command-link" type="button" :disabled="backupLoading" @click="downloadBackup">{{ backupLoading ? '备份中…' : '备份' }}</button>
         <a v-else-if="user?.role === 'owner'" class="command-link" href="/api/v1/backup" download="typecho-backup.zip">备份</a>
@@ -1045,6 +1183,7 @@ onUnmounted(() => {
       </div>
     </header>
     <main class="admin-main">
+      <MediaPicker v-if="mediaPickerTarget" :session-generation="sessionGeneration" @select="onMediaPicked" @close="mediaPickerTarget = null" @session-expired="onAdminSessionExpired" @access-revoked="revalidateAdminSession" />
       <div v-if="user && (backupError || backupMessage)" class="backup-feedback">
         <p v-if="backupError" class="form-error" role="alert">{{ backupError }}</p>
         <p v-else class="form-success" role="status">{{ backupMessage }}</p>
@@ -1073,30 +1212,48 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
-        <header id="overview" class="admin-topbar">
-          <p class="eyebrow">工作台</p>
-          <h1>欢迎回来<span v-if="user">，{{ user.username }}</span></h1>
-          <p class="admin-lead">写文章、审评论、整理分类和图片，都从这一页开始。</p>
-        </header>
+        <div class="admin-workspace">
+          <nav class="command-nav" aria-label="管理分区">
+            <a href="#overview" :class="{ active: activeSection === 'overview' }" :aria-current="activeSection === 'overview' ? 'page' : undefined" @click="navigateAdminSection('overview', $event)">概览</a>
+            <a href="#posts" :class="{ active: activeSection === 'posts' }" :aria-current="activeSection === 'posts' ? 'page' : undefined" @click="navigateAdminSection('posts', $event)">文章</a>
+            <a v-if="canEditContent" href="#pages" :class="{ active: activeSection === 'pages' }" :aria-current="activeSection === 'pages' ? 'page' : undefined" @click="navigateAdminSection('pages', $event)">页面</a>
+            <a v-if="canModerateComments" href="#comments" :class="{ active: activeSection === 'comments' }" :aria-current="activeSection === 'comments' ? 'page' : undefined" @click="navigateAdminSection('comments', $event)">评论</a>
+            <a v-if="canEditContent" href="#media" :class="{ active: activeSection === 'media' }" :aria-current="activeSection === 'media' ? 'page' : undefined" @click="navigateAdminSection('media', $event)">媒体</a>
+            <a v-if="canEditContent" href="#taxonomy" :class="{ active: activeSection === 'taxonomy' }" :aria-current="activeSection === 'taxonomy' ? 'page' : undefined" @click="navigateAdminSection('taxonomy', $event)">分类</a>
+            <a v-if="user.role === 'owner'" href="#mail" :class="{ active: activeSection === 'mail' }" :aria-current="activeSection === 'mail' ? 'page' : undefined" @click="navigateAdminSection('mail', $event)">通知</a>
+            <a v-if="user.role === 'owner'" href="/setting">设置</a>
+          </nav>
+          <div class="admin-content">
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <p v-if="dashboardLoadError" class="form-error" role="alert">{{ dashboardLoadError }}</p>
         <button v-if="dashboardLoadError" class="text-button" type="button" :disabled="loading" @click="retryDashboard">重试加载管理数据</button>
-        <div class="stats-grid">
-          <div class="stat-card"><span>全部文章</span><strong>{{ stats.posts }}</strong><small>累计内容</small></div>
-          <div class="stat-card stat-green"><span>已发布</span><strong>{{ stats.publishedPosts }}</strong><small>对外可见</small></div>
-          <div class="stat-card stat-yellow"><span>草稿</span><strong>{{ stats.drafts }}</strong><small>等待完善</small></div>
-          <div class="stat-card stat-blue"><span>待审核评论</span><strong>{{ stats.pendingComments }}</strong><small>需要处理</small></div>
-        </div>
+        <section id="overview" class="admin-section admin-overview" v-show="activeSection === 'overview'">
+          <header class="admin-topbar">
+            <p class="eyebrow">工作台</p>
+            <h1>欢迎回来<span v-if="user">，{{ user.username }}</span></h1>
+            <p class="admin-lead">写文章、审评论、整理分类和图片，都从这一页开始。</p>
+          </header>
+          <div v-if="loading" class="user-state" role="status">正在读取概览…</div>
+          <div v-else class="stats-grid">
+            <div class="stat-card"><span>全部文章</span><strong>{{ stats.posts }}</strong><small>累计内容</small></div>
+            <div class="stat-card stat-green"><span>已发布</span><strong>{{ stats.publishedPosts }}</strong><small>对外可见</small></div>
+            <div class="stat-card stat-yellow"><span>草稿</span><strong>{{ stats.drafts }}</strong><small>等待完善</small></div>
+            <div class="stat-card stat-blue"><span>待审核评论</span><strong>{{ stats.pendingComments }}</strong><small>需要处理</small></div>
+          </div>
+          <div v-if="!loading && !dashboardLoadError && canEditContent && stats.posts === 0" class="overview-quickstart">
+            <p>还没有文章</p>
+            <button class="button button-primary" type="button" @click="startPostFromOverview">{{ showEditor ? '继续写作' : '写第一篇文章' }}</button>
+          </div>
+        </section>
 
-        <AdminNotifications v-if="user?.role === 'owner'" :session-generation="sessionGeneration" @session-expired="onAdminSessionExpired" @access-revoked="revalidateAdminSession" />
-
-        <section v-if="canEditContent" class="admin-section" id="posts">
-          <div class="section-heading"><div><p class="eyebrow">文章</p><h2>写作与稿件</h2></div><span class="section-count">{{ postTotal }} 篇</span><button v-if="canEditContent" class="button button-primary" type="button" @click="toggleEditor">{{ showEditor ? '关闭编辑器' : '+ 写文章' }}</button></div>
-          <form v-if="showEditor && canEditContent" id="post-editor" class="editor-card editor-split" @submit.prevent="publish">
-            <div class="editor-write">
+        <section v-if="canEditContent" v-show="activeSection === 'posts'" class="admin-section" id="posts">
+          <div class="section-heading"><div><p class="eyebrow">文章</p><h2>写作与稿件</h2></div><span class="section-count">{{ postTotal }} 篇</span><button v-if="canEditContent" class="button button-primary" type="button" :disabled="postSaving" @click="toggleEditor">{{ showEditor ? '关闭编辑器' : '+ 写文章' }}</button></div>
+          <form v-if="showEditor && canEditContent" id="post-editor" class="editor-card editor-split" :aria-busy="postSaving" @submit.prevent="publish" @keydown="submitEditorShortcut">
+            <p class="editor-state-label" :class="{ pending: postEditorDirty || postSaving }" role="status">{{ postSaving ? '正在保存…' : postEditorDirty ? '有未保存更改' : editingId ? '已保存内容' : '新建文章' }}</p>
+            <div class="editor-write" :inert="postSaving">
               <input v-model="editor.title" class="editor-title" required placeholder="文章标题" />
               <label class="editor-slug">固定链接<input v-model="editor.slug" placeholder="留空则保留现有地址或按标题生成" /></label>
-              <textarea ref="postContentInput" v-model="editor.content" rows="12" required placeholder="开始写作，支持 Markdown…" aria-label="文章 Markdown 正文"></textarea>
+              <textarea ref="postContentInput" v-model="editor.content" class="editor-content" rows="12" required placeholder="开始写作，支持 Markdown…" aria-label="文章 Markdown 正文"></textarea>
               <div class="editor-preview-bar">
                 <div class="editor-markdown-tools" role="group" aria-label="文章 Markdown 格式">
                   <button v-for="action in markdownActions" :key="action.command" class="text-button markdown-action" type="button" :title="action.title" :aria-label="action.title" @mousedown.prevent @click="formatPost(action.command)">{{ action.label }}</button>
@@ -1105,7 +1262,7 @@ onUnmounted(() => {
               </div>
               <div v-if="showPreview" class="article-body article-rich editor-preview" v-html="previewHTML"></div>
             </div>
-            <div class="editor-meta">
+            <div class="editor-meta" :inert="postSaving">
               <label>摘要<textarea v-model="editor.excerpt" rows="3" placeholder="一句话摘要（可选）"></textarea></label>
               <label>分类<input v-model="editor.categories" placeholder="产品, 随笔" /></label>
               <label>标签<input v-model="editor.tags" placeholder="Go, Vue, 重构" /></label>
@@ -1123,14 +1280,14 @@ onUnmounted(() => {
               <div v-if="revisionsTotal" class="taxonomy-list">
                 <div v-for="revision in revisions" :key="revision.id" class="taxonomy-row">
                   <div><strong>{{ revision.title }}</strong><small>{{ new Date(revision.createdAt).toLocaleString('zh-CN') }}</small></div>
-                  <button class="text-button" type="button" @click="restore(revision)">恢复此版本</button>
+                  <button class="text-button" type="button" :disabled="revisionRestoring" @click="restore(revision)">{{ revisionRestoring ? '正在恢复…' : '恢复此版本' }}</button>
                 </div>
                 <div v-if="revisions.length < revisionsTotal" class="taxonomy-row">
                   <small>已加载 {{ revisions.length }} / {{ revisionsTotal }} 个版本</small>
                   <button class="text-button" type="button" :disabled="revisionsLoading" @click="loadMoreRevisions">{{ revisionsLoading ? '正在加载…' : '加载更早版本' }}</button>
                 </div>
               </div>
-              <div class="editor-actions"><label class="editor-check"><input v-model="editor.allowComment" type="checkbox" />允许评论</label><select v-model="editor.status"><option value="draft">保存为草稿</option><option value="published">立即发布</option></select><p v-if="editorError" class="form-error" role="alert">{{ editorError }}</p><button class="button button-dark">{{ editingId ? '保存修改' : '保存文章' }}</button></div>
+              <div class="editor-actions"><label class="editor-check"><input v-model="editor.allowComment" type="checkbox" />允许评论</label><select v-model="editor.status" :disabled="postSaving"><option value="draft">保存为草稿</option><option value="published">立即发布</option></select><p v-if="editorError" class="form-error" role="alert">{{ editorError }}</p><button class="button button-dark" :disabled="postSaving" aria-keyshortcuts="Control+S Meta+S">{{ postSaving ? '保存中…' : editingId ? '保存修改' : '保存文章' }}</button></div>
             </div>
           </form>
           <div v-if="loading" class="empty-state" role="status">正在加载…</div>
@@ -1149,13 +1306,14 @@ onUnmounted(() => {
           <div v-if="postTotal > adminPageSize" class="pagination"><button class="text-button" type="button" :disabled="postPage === 1" @click="changePostPage(postPage - 1)">上一页</button><span>{{ postPage }} / {{ pageCount(postTotal) }} · 共 {{ postTotal }} 篇</span><button class="text-button" type="button" :disabled="postPage >= pageCount(postTotal)" @click="changePostPage(postPage + 1)">下一页</button></div>
         </section>
 
-        <section v-if="canEditContent" class="admin-section page-section" id="pages">
-          <div class="section-heading"><div><p class="eyebrow">页面</p><h2>独立页面</h2></div><span class="section-count">{{ pageTotal }} 个</span><button class="button button-primary" type="button" @click="togglePageEditor">{{ showPageEditor ? '关闭编辑器' : '+ 新建页面' }}</button></div>
-          <form v-if="showPageEditor" id="page-editor" class="editor-card editor-split" @submit.prevent="savePage">
-            <div class="editor-write">
+        <section v-if="canEditContent" v-show="activeSection === 'pages'" class="admin-section page-section" id="pages">
+          <div class="section-heading"><div><p class="eyebrow">页面</p><h2>独立页面</h2></div><span class="section-count">{{ pageTotal }} 个</span><button class="button button-primary" type="button" :disabled="pageSaving" @click="togglePageEditor">{{ showPageEditor ? '关闭编辑器' : '+ 新建页面' }}</button></div>
+          <form v-if="showPageEditor" id="page-editor" class="editor-card editor-split" :aria-busy="pageSaving" @submit.prevent="savePage" @keydown="submitEditorShortcut">
+            <p class="editor-state-label" :class="{ pending: pageEditorDirty || pageSaving }" role="status">{{ pageSaving ? '正在保存…' : pageEditorDirty ? '有未保存更改' : editingPageId ? '已保存内容' : '新建页面' }}</p>
+            <div class="editor-write" :inert="pageSaving">
               <input v-model="pageEditor.title" class="editor-title" required placeholder="页面标题" />
               <label class="editor-slug">固定链接<input v-model="pageEditor.slug" placeholder="留空则按标题生成" /></label>
-              <textarea ref="pageContentInput" v-model="pageEditor.content" rows="12" required placeholder="页面内容，支持 Markdown…" aria-label="页面 Markdown 正文"></textarea>
+              <textarea ref="pageContentInput" v-model="pageEditor.content" class="editor-content" rows="12" required placeholder="页面内容，支持 Markdown…" aria-label="页面 Markdown 正文"></textarea>
               <div class="editor-preview-bar">
                 <div class="editor-markdown-tools" role="group" aria-label="页面 Markdown 格式">
                   <button v-for="action in markdownActions" :key="action.command" class="text-button markdown-action" type="button" :title="action.title" :aria-label="action.title" @mousedown.prevent @click="formatPage(action.command)">{{ action.label }}</button>
@@ -1164,19 +1322,20 @@ onUnmounted(() => {
               </div>
               <div v-if="showPagePreview" class="article-body article-rich editor-preview" v-html="pagePreviewHTML"></div>
             </div>
-            <div class="editor-meta">
+            <div class="editor-meta" :inert="pageSaving">
               <label>摘要<textarea v-model="pageEditor.excerpt" rows="3" placeholder="页面摘要（可选）"></textarea></label>
-              <div class="editor-actions"><select v-model="pageEditor.status"><option value="draft">保存为草稿</option><option value="published">立即发布</option></select><p v-if="pageEditorError" class="form-error" role="alert">{{ pageEditorError }}</p><button class="button button-dark">{{ editingPageId ? '保存修改' : '保存页面' }}</button></div>
+              <div class="editor-actions"><select v-model="pageEditor.status" :disabled="pageSaving"><option value="draft">保存为草稿</option><option value="published">立即发布</option></select><p v-if="pageEditorError" class="form-error" role="alert">{{ pageEditorError }}</p><button class="button button-dark" :disabled="pageSaving" aria-keyshortcuts="Control+S Meta+S">{{ pageSaving ? '保存中…' : editingPageId ? '保存修改' : '保存页面' }}</button></div>
             </div>
           </form>
-          <div v-if="pages.length === 0" class="empty-state page-empty">还没有独立页面</div>
+          <div v-if="loading" class="empty-state" role="status">正在加载页面…</div>
+          <div v-else-if="pages.length === 0" class="empty-state page-empty">还没有独立页面</div>
           <div v-else class="admin-posts">
             <div v-for="page in pages" :key="page.id" class="admin-post-row"><div><span class="post-status" :class="page.status">{{ page.status === 'published' ? '已发布' : '草稿' }}</span><div><strong>{{ page.title }}</strong><small>/page/{{ page.slug }}</small></div></div><time>{{ new Date(page.updatedAt).toLocaleDateString('zh-CN') }}</time><div class="row-actions"><button class="text-button" type="button" @click="startPageEdit(page)">编辑</button><a class="text-button" :href="pagePreviewURL(page)" target="_blank" rel="noreferrer">{{ page.status === 'published' ? '查看' : '预览' }}</a><button class="text-button danger" type="button" @click="removePage(page)">删除</button></div></div>
           </div>
           <div v-if="pageTotal > adminPageSize" class="pagination"><button class="text-button" type="button" :disabled="pagePage === 1" @click="changePagePage(pagePage - 1)">上一页</button><span>{{ pagePage }} / {{ pageCount(pageTotal) }} · 共 {{ pageTotal }} 个</span><button class="text-button" type="button" :disabled="pagePage >= pageCount(pageTotal)" @click="changePagePage(pagePage + 1)">下一页</button></div>
         </section>
 
-        <section v-if="canModerateComments" id="comments" class="admin-section comments-section">
+        <section v-if="canModerateComments" v-show="activeSection === 'comments'" id="comments" class="admin-section comments-section">
           <div class="section-heading"><div><p class="eyebrow">评论</p><h2>审核</h2></div><span class="section-count">{{ commentTotal }} 条</span></div>
           <div class="term-filter-bar">
             <button class="term-filter" type="button" :class="{ active: commentStatus === 'pending' }" @click="switchCommentStatus('pending')">待审核</button>
@@ -1184,7 +1343,8 @@ onUnmounted(() => {
             <button class="term-filter" type="button" :class="{ active: commentStatus === 'spam' }" @click="switchCommentStatus('spam')">垃圾</button>
           </div>
           <p v-if="commentError" class="form-error" role="alert">{{ commentError }}</p>
-          <div v-if="moderationComments.length === 0" class="empty-state">这个状态下还没有评论</div>
+          <div v-if="loading" class="empty-state" role="status">正在加载评论…</div>
+          <div v-else-if="moderationComments.length === 0" class="empty-state">这个状态下还没有评论</div>
           <div v-else class="admin-comments">
             <article v-for="comment in moderationComments" :key="comment.id" class="admin-comment-row">
               <div class="comment-row-content">
@@ -1199,10 +1359,11 @@ onUnmounted(() => {
           <div v-if="commentTotal > adminPageSize" class="pagination"><button class="text-button" type="button" :disabled="commentPage === 1" @click="changeCommentPage(commentPage - 1)">上一页</button><span>{{ commentPage }} / {{ pageCount(commentTotal) }} · 共 {{ commentTotal }} 条</span><button class="text-button" type="button" :disabled="commentPage >= pageCount(commentTotal)" @click="changeCommentPage(commentPage + 1)">下一页</button></div>
         </section>
 
-        <section v-if="canEditContent" id="media" class="admin-section media-section">
+        <section v-if="canEditContent" v-show="activeSection === 'media'" id="media" class="admin-section media-section">
           <div class="section-heading"><div><p class="eyebrow">媒体</p><h2>图片</h2><p class="media-upload-hint">单文件不超过 10 MiB；最长边 16,384 px，最多 4,000 万像素</p></div><span class="section-count">{{ mediaTotal }} 个</span><label class="button button-primary media-upload"><input type="file" accept="image/jpeg,image/png,image/gif,image/webp" :disabled="mediaUploading" @change="uploadMedia" />{{ mediaUploading ? '上传中…' : '+ 上传图片' }}</label></div>
           <p v-if="mediaError" class="form-error" role="alert">{{ mediaError }}</p>
-          <div v-if="media.length === 0" class="empty-state media-empty">还没有上传媒体</div>
+          <div v-if="loading" class="empty-state" role="status">正在加载媒体…</div>
+          <div v-else-if="media.length === 0" class="empty-state media-empty">还没有上传媒体</div>
           <div v-else class="media-grid">
             <article v-for="asset in media" :key="asset.id" class="media-card">
               <a :href="asset.url" target="_blank" rel="noreferrer"><img :src="asset.url" :alt="asset.filename" loading="lazy" /></a>
@@ -1213,7 +1374,7 @@ onUnmounted(() => {
           <div v-if="mediaTotal > adminPageSize" class="pagination"><button class="text-button" type="button" :disabled="mediaPage === 1" @click="changeMediaPage(mediaPage - 1)">上一页</button><span>{{ mediaPage }} / {{ pageCount(mediaTotal) }} · 共 {{ mediaTotal }} 个</span><button class="text-button" type="button" :disabled="mediaPage >= pageCount(mediaTotal)" @click="changeMediaPage(mediaPage + 1)">下一页</button></div>
         </section>
 
-        <section v-if="canEditContent" id="taxonomy" class="admin-section taxonomy-section">
+        <section v-if="canEditContent" v-show="activeSection === 'taxonomy'" id="taxonomy" class="admin-section taxonomy-section">
           <div class="section-heading"><div><p class="eyebrow">分类</p><h2>分类与标签</h2></div><span class="section-count">{{ termTotal }} 个</span></div>
           <form class="taxonomy-form" @submit.prevent="createTerm">
             <input v-model="termForm.name" required maxlength="60" placeholder="名称" />
@@ -1221,7 +1382,8 @@ onUnmounted(() => {
             <button class="button button-primary" :disabled="termSubmitting">{{ termSubmitting ? '保存中…' : '新增' }}</button>
           </form>
           <p v-if="termError" class="form-error" role="alert">{{ termError }}</p>
-          <div v-if="terms.length === 0" class="empty-state taxonomy-empty">还没有分类或标签</div>
+          <div v-if="loading" class="empty-state" role="status">正在加载分类和标签…</div>
+          <div v-else-if="terms.length === 0" class="empty-state taxonomy-empty">还没有分类或标签</div>
           <div v-else class="taxonomy-list">
             <div v-for="term in terms" :key="term.id" class="taxonomy-row">
               <div><strong v-if="renamingId !== term.id">{{ term.name }}</strong><input v-else v-model="renameValue" maxlength="60" /><small>{{ term.kind === 'category' ? '分类' : '标签' }} · {{ term.postCount }} 篇已发布文章</small></div>
@@ -1230,7 +1392,9 @@ onUnmounted(() => {
           </div>
           <div v-if="termTotal > adminPageSize" class="pagination"><button class="text-button" type="button" :disabled="termPage === 1" @click="changeTermPage(termPage - 1)">上一页</button><span>{{ termPage }} / {{ pageCount(termTotal) }} · 共 {{ termTotal }} 个</span><button class="text-button" type="button" :disabled="termPage >= pageCount(termTotal)" @click="changeTermPage(termPage + 1)">下一页</button></div>
         </section>
-
+        <AdminNotifications v-if="user?.role === 'owner' && activeSection === 'mail'" :session-generation="sessionGeneration" @session-expired="onAdminSessionExpired" @access-revoked="revalidateAdminSession" />
+          </div>
+        </div>
       </template>
     </main>
   </div>

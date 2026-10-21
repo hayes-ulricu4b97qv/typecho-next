@@ -42,56 +42,14 @@ var currentSchemaTables = []schemaTable{
 	{"password_resets", []string{"token_hash", "username", "expires_at", "created_at"}},
 }
 
-var legacySchemaTables = []schemaTable{
-	{"schema_migrations", []string{"version", "applied_at"}},
-	{"sites", []string{
-		"id", "name", "url", "admin_mail", "timezone", "created_at", "updated_at",
-	}},
-	{"users", []string{
-		"id", "username", "password_hash", "email", "role", "active", "created_at", "updated_at",
-	}},
-	{"posts", []string{
-		"id", "title", "slug", "excerpt", "content", "status", "published_at", "updated_at",
-	}},
-	{"pages", []string{
-		"id", "title", "slug", "excerpt", "content", "status", "published_at", "updated_at",
-	}},
-	{"terms", []string{"id", "name", "slug", "kind", "created_at", "updated_at"}},
-	{"post_terms", []string{"post_id", "term_id"}},
-	{"comments", []string{
-		"id", "post_id", "author_name", "author_email", "content", "status", "created_at", "updated_at",
-	}},
-	{"media", []string{"id", "filename", "content_type", "size", "storage_key", "created_at"}},
-	{"sessions", []string{"token_hash", "username", "expires_at", "created_at"}},
-	{"audit_events", []string{
-		"id", "actor_user_id", "actor_username", "action", "resource_type", "resource_id", "details", "created_at",
-	}},
-	{"search_tokens", []string{"kind", "token", "record_id"}},
-	{"post_revisions", []string{"id", "post_id", "title", "excerpt", "content", "created_at"}},
-	{"outbound_mail", []string{"id", "recipient", "subject", "body", "created_at"}},
-	{"password_resets", []string{"token_hash", "username", "expires_at", "created_at"}},
-}
-
-var legacyOptionalColumns = map[string]map[string]bool{
-	"sites": {
-		"description": true, "keywords": true, "posts_per_page": true,
-		"comments_enabled": true, "comments_require_moderation": true, "comments_threaded": true,
-	},
-	"posts":          {"allow_comment": true, "passphrase_hash": true, "custom_fields": true},
-	"comments":       {"parent_id": true, "author_url": true},
-	"sessions":       {"user_id": true},
-	"post_revisions": {"custom_fields": true},
-}
-
 var integerSchemaColumns = map[string]map[string]bool{
 	"sites": {
 		"id": true, "posts_per_page": true, "comments_enabled": true,
 		"comments_require_moderation": true, "comments_threaded": true,
 	},
-	"users":             {"active": true},
-	"posts":             {"allow_comment": true},
-	"media":             {"size": true},
-	"schema_migrations": {"version": true},
+	"users": {"active": true},
+	"posts": {"allow_comment": true},
+	"media": {"size": true},
 }
 
 var schemaColumnDefaults = map[string]map[string]string{
@@ -114,21 +72,20 @@ var schemaColumnDefaults = map[string]map[string]string{
 }
 
 var schemaPrimaryKeys = map[string][]string{
-	"schema_migrations": {"version"},
-	"sites":             {"id"},
-	"users":             {"id"},
-	"posts":             {"id"},
-	"pages":             {"id"},
-	"terms":             {"id"},
-	"post_terms":        {"post_id", "term_id"},
-	"comments":          {"id"},
-	"media":             {"id"},
-	"sessions":          {"token_hash"},
-	"audit_events":      {"id"},
-	"search_tokens":     {"kind", "token", "record_id"},
-	"post_revisions":    {"id"},
-	"outbound_mail":     {"id"},
-	"password_resets":   {"token_hash"},
+	"sites":           {"id"},
+	"users":           {"id"},
+	"posts":           {"id"},
+	"pages":           {"id"},
+	"terms":           {"id"},
+	"post_terms":      {"post_id", "term_id"},
+	"comments":        {"id"},
+	"media":           {"id"},
+	"sessions":        {"token_hash"},
+	"audit_events":    {"id"},
+	"search_tokens":   {"kind", "token", "record_id"},
+	"post_revisions":  {"id"},
+	"outbound_mail":   {"id"},
+	"password_resets": {"token_hash"},
 }
 
 var nullableSchemaColumns = map[string]map[string]bool{
@@ -137,19 +94,18 @@ var nullableSchemaColumns = map[string]map[string]bool{
 }
 
 var implicitNotNullPrimaryKeyColumns = map[string]map[string]bool{
-	"schema_migrations": {"version": true},
-	"sites":             {"id": true},
-	"users":             {"id": true},
-	"posts":             {"id": true},
-	"pages":             {"id": true},
-	"terms":             {"id": true},
-	"comments":          {"id": true},
-	"media":             {"id": true},
-	"sessions":          {"token_hash": true},
-	"audit_events":      {"id": true},
-	"post_revisions":    {"id": true},
-	"outbound_mail":     {"id": true},
-	"password_resets":   {"token_hash": true},
+	"sites":           {"id": true},
+	"users":           {"id": true},
+	"posts":           {"id": true},
+	"pages":           {"id": true},
+	"terms":           {"id": true},
+	"comments":        {"id": true},
+	"media":           {"id": true},
+	"sessions":        {"token_hash": true},
+	"audit_events":    {"id": true},
+	"post_revisions":  {"id": true},
+	"outbound_mail":   {"id": true},
+	"password_resets": {"token_hash": true},
 }
 
 type schemaIndexColumn struct {
@@ -230,14 +186,4 @@ var schemaCheckExpressions = map[string][]string{
 	"pages":    {"status IN ('draft', 'published')"},
 	"terms":    {"kind IN ('category', 'tag')"},
 	"comments": {"status IN ('pending', 'approved', 'spam')"},
-}
-
-var legacyAddedColumnChecks = map[string]map[string]bool{
-	"sites": {
-		"posts_per_page between 1 and 50":       true,
-		"comments_enabled in (0, 1)":            true,
-		"comments_require_moderation in (0, 1)": true,
-		"comments_threaded in (0, 1)":           true,
-	},
-	"posts": {"allow_comment in (0, 1)": true},
 }

@@ -263,11 +263,10 @@ onUnmounted(() => {
     <h1>{{ siteName || '博客' }}</h1>
     <p v-if="siteDescription">{{ siteDescription }}</p>
     <form class="search-bar" @submit.prevent="submitSearch">
-      <input id="reader-search" v-model="search" type="search" maxlength="200" placeholder="搜索标题或正文" aria-label="搜索文章" aria-describedby="reader-search-hint" @keydown="blurSearch" />
+      <input id="reader-search" v-model="search" type="search" maxlength="200" placeholder="搜索标题或正文" aria-label="搜索文章" @keydown="blurSearch" />
       <button class="button button-primary" type="submit">搜索</button>
       <button v-if="submittedSearch" class="button" type="button" @click="clearSearch">清除</button>
     </form>
-    <p id="reader-search-hint" class="search-hint">最多 200 个字符；按 / 聚焦搜索，Esc 取消焦点</p>
   </header>
   <div v-if="terms.length || termsError" class="term-filter-bar" role="group" aria-label="按分类或标签筛选">
     <button class="term-filter" type="button" :class="{ active: !categoryFilter && !tagFilter }" @click="clearTerms">全部</button>

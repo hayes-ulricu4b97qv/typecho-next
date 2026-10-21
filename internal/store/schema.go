@@ -52,10 +52,6 @@ func (r *SQLiteRepository) createSchema() error {
 	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	var existingTables int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`).Scan(&existingTables); err != nil {
-		return fmt.Errorf("inspect database schema: %w", err)
-	}
 	if version == currentSchemaVersion {
 		if err := validateCurrentSchema(tx); err != nil {
 			return fmt.Errorf("validate database schema version %d: %w", version, err)
@@ -65,21 +61,12 @@ func (r *SQLiteRepository) createSchema() error {
 	if version != 0 {
 		return fmt.Errorf("unsupported database schema version %d (expected schema version %d); the database was not modified", version, currentSchemaVersion)
 	}
-	legacy := existingTables != 0
-	if legacy {
-		recognized, err := isRecognizedLegacySchema(tx)
-		if err != nil {
-			return fmt.Errorf("inspect legacy database schema: %w", err)
-		}
-		if !recognized {
-			return fmt.Errorf("unrecognized unversioned database; the database was not modified. Back it up, open it with its matching application version, or configure an empty APP_DATA_DIR")
-		}
-		if err := addLegacyColumns(tx); err != nil {
-			return fmt.Errorf("upgrade legacy database columns: %w", err)
-		}
-		if err := normalizeLegacyTimestamps(tx); err != nil {
-			return fmt.Errorf("normalize legacy database timestamps: %w", err)
-		}
+	var existingTables int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`).Scan(&existingTables); err != nil {
+		return fmt.Errorf("inspect database schema: %w", err)
+	}
+	if existingTables != 0 {
+		return fmt.Errorf("unrecognized unversioned database; the database was not modified. Back it up and configure an empty APP_DATA_DIR to initialize a new site")
 	}
 
 	statements := []string{

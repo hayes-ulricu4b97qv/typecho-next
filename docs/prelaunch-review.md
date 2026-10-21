@@ -2,7 +2,7 @@
 
 > 本文是改进前的历史审查记录，条目中的“当前行为”不代表最新代码。现在仅支持 Windows，原有部署方式和 Makefile 已移除，使用 `tasks.ps1`。现行运行、备份和恢复流程见 [operations.md](operations.md)。验收应以当前代码和测试为准。
 
-本文记录早期对 Go API 与 Vue 客户端的审查结论。站点当时尚未上线，因此审查建议可直接调整 JSON 字段、默认排序、校验和新库 schema。本文不定义现行数据库兼容范围；当前 SQLite 升级契约见 [operations.md](operations.md) 和 [architecture.md](architecture.md)。旧 PHP Typecho 数据库与 `app.json` 导入仍不受支持。
+本文记录早期对 Go API 与 Vue 客户端的审查结论。站点当时尚未上线，因此审查建议可直接调整 JSON 字段、默认排序、校验和新库 schema。本文不定义现行数据库兼容范围；当前 SQLite 初始化要求见 [operations.md](operations.md) 和 [architecture.md](architecture.md)。旧 PHP Typecho 数据库与 `app.json` 导入仍不受支持。
 
 审查读过 `cmd/server`、`internal/config`、`internal/httpapi`、`internal/service`、`internal/store`、`web/src`、`docs/architecture.md`、`README.md`和 `Makefile`。本文不是这些文件的重写。
 
@@ -15,7 +15,7 @@
 | 认证、CSRF、角色 | 机制已经接通，见「改进」第 6 条。会话 cookie、双提交 CSRF 和三种角色都在代码里，不是缺失功能。 |
 | 文章、页面、分类、评论、媒体 | 读写、审核和上传都已接通，见「改进」第 1–3 条和「完善」第 1–4 条。 |
 | Vue 读者端与管理端 | 六个视图覆盖阅读、写作、设置和审核，见「改进」第 4、9 条和「完善」第 1–7 条。 |
-| SQLite schema | 审查时空数据库创建完整 schema，不匹配的旧库会在启动阶段拒绝；当前支持的早期 Go schema 升级范围见 [operations.md](operations.md)。 |
+| SQLite schema | 审查时空数据库创建完整 schema，不匹配的旧库会在启动阶段拒绝；目前只有空库初始化和当前版本校验，不升级旧 schema，详见 [operations.md](operations.md)。 |
 | 可运维性 | `/healthz`、`/readyz`、`/feed.xml`、`/sitemap.xml`、`/robots.txt` 和 `tasks.ps1` 都在，见「改进」第 3、5、8 条和「拓展」第 6 条。 |
 
 已经存在、本文不把它说成缺失的行为：
@@ -329,7 +329,7 @@
 
 路径：`internal/httpapi/server.go` 的 `postRequest` 与 `publicPost`，`internal/store/schema.go` 的 `posts` 和 `post_revisions`，`web/src/views/AdminView.vue`、`web/src/views/PostDetailView.vue`。
 
-当前受支持的早期 Go schema 升级会在事务中补齐自定义字段列，其他数据库结构不匹配时会拒绝启动且不修改数据；具体条件见 [operations.md](operations.md)。
+本次调整后不再升级早期 Go schema；旧数据库会在修改前被拒绝。新站点使用新的空 `APP_DATA_DIR`，当前数据库要求 `user_version=2` 并通过结构校验，具体条件见 [operations.md](operations.md)。
 
 ### 6. 没有持续集成，也没有备份入口
 
@@ -353,7 +353,7 @@
 
 ## 原审查时点的范围建议
 
-- 不设计任意旧 SQLite、旧 PHP Typecho 或 `app.json` 的通用导入兼容层；当前只支持 [operations.md](operations.md) 明列的旧 Go schema 升级。
+- 不设计任意旧 SQLite、旧 PHP Typecho 或 `app.json` 的通用导入兼容层；旧 schema 不升级，新站点使用空目录初始化，详见 [operations.md](operations.md)。
 - 不要求插件、主题运行时、XML-RPC，或与旧版固定链接一致。
 - 不替换 Go、Vue 和 SQLite 这套栈。`Repository` 接口在 `internal/store/repository.go`。第二套数据库适配器不在本文范围内。
 - 未知或不兼容的 SQLite schema 不在支持范围；程序会拒绝启动且不改动数据库。不要据此删除现有数据库，应按 [operations.md](operations.md) 中的步骤检查、备份或创建新数据目录。

@@ -1,0 +1,74 @@
+services:
+  typecho-next:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: typecho-next:local
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      APP_LISTEN_HOST: 0.0.0.0
+      APP_PORT: "8081"
+      APP_DATA_DIR: /var/lib/typecho
+      TMPDIR: /var/lib/typecho
+      APP_WEB_DIR: /app/web/dist
+      APP_COOKIE_SECURE: "true"
+      APP_TRUSTED_PROXIES: "${TYPECHO_CADDY_IP:-172.29.240.2}/32"
+      APP_SMTP_HOST: ${APP_SMTP_HOST:-}
+      APP_SMTP_PORT: ${APP_SMTP_PORT:-}
+      APP_SMTP_USERNAME: ${APP_SMTP_USERNAME:-}
+      APP_SMTP_PASSWORD: ${APP_SMTP_PASSWORD:-}
+      APP_SMTP_FROM: ${APP_SMTP_FROM:-}
+      APP_SMTP_TLS_MODE: ${APP_SMTP_TLS_MODE:-starttls}
+    expose:
+      - "8081"
+    volumes:
+      - typecho_data:/var/lib/typecho
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      blog:
+        ipv4_address: ${TYPECHO_APP_IP:-172.29.240.3}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?Set SITE_DOMAIN in .env}
+    depends_on:
+      typecho-next:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      blog:
+        ipv4_address: ${TYPECHO_CADDY_IP:-172.29.240.2}
+
+volumes:
+  typecho_data:
+    name: ${TYPECHO_DATA_VOLUME:-typecho-next-data}
+  caddy_data:
+    name: typecho-next-caddy-data
+  caddy_config:
+    name: typecho-next-caddy-config
+
+networks:
+  blog:
+    ipam:
+      config:
+        - subnet: ${TYPECHO_NETWORK_SUBNET:-172.29.240.0/24}

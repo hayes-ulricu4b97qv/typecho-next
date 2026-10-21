@@ -28,7 +28,7 @@ web/dist/            Vite 构建产物（运行前生成）
 | `/healthz` | 存活检查，初始化前也返回正常 |
 | `/readyz` | 就绪检查，初始化完成前返回 503 |
 
-服务启动时打开 `APP_DATA_DIR/app.db`。空数据库会在单个事务中创建当前完整 schema，并写入 `PRAGMA user_version=2`。程序也会升级由早期 Go 版本创建、带有完整 `schema_migrations` 1–8 记录且基础表结构匹配的数据库：事务内补齐设置、评论、会话和自定义字段列，统一时间戳格式，再验证表列、类型、默认值、非空属性、主键、唯一约束及其冲突策略、外键、检查约束和关键索引定义并写入版本号。旧版 `ALTER TABLE` 未给部分新列添加的检查约束，仅在完整旧迁移台账匹配时作为兼容形状接受。数据与旧会话记录会保留；迁移失败（包括无效时间戳）会回滚。无版本号但不符合该旧 Go schema、迁移记录不完整、或 `user_version` 不受支持的数据库会在修改前拒绝启动。PHP 或 `app.json` 导入不在支持范围内。没有初始化记录时，页面请求转到 `/setting`，初始化成功后才开放 `/admin` 和 `/user`；检查初始化状态时若 SQLite 读取失败，API 返回 `503 not_ready`，普通前端页面也返回 `503`，不会伪装成尚未初始化。
+服务启动时打开 `APP_DATA_DIR/app.db`。空数据库会在单个事务中创建当前完整 schema，并写入 `PRAGMA user_version=2`。现有数据库必须带有当前版本号且通过完整结构校验；未版本化的非空数据库和其他 schema 版本会在修改前拒绝启动。程序不升级早期 Go 数据库，也不导入 PHP 或 `app.json` 数据；创建新站点时应配置新的空 `APP_DATA_DIR`。没有初始化记录时，页面请求转到 `/setting`，初始化成功后才开放 `/admin` 和 `/user`；检查初始化状态时若 SQLite 读取失败，API 返回 `503 not_ready`，普通前端页面也返回 `503`，不会伪装成尚未初始化。
 
 文章接口支持 `q`、`category`、`tag`、`month`、`order`、`status`、`page` 和 `pageSize` 参数。`order` 默认按 `published_at`，传入 `updated` 时按更新时间。`status` 可指定 `draft` 或 `published`；草稿筛选只向内容编辑者开放，并在 SQL 分页前应用，因此筛选总数与页码一致。显式传入 1 到 100 之外的 `pageSize` 会返回校验错误。公开接口只返回已发布且发布时间不晚于当前时刻的文章，内容编辑者也可以带 `includeDraft=true` 读取全部草稿和排期文章。文章列表只从 SQLite 读取摘要字段，不加载正文；详情接口读取完整正文，RSS 只从 SQLite 读取摘要或正文前 281 个字符。登录 cookie 只携带随机令牌，数据库中保存 SHA-256 哈希、`users.id` 和过期时间，因此服务重启后，同一数据库上的登录会话仍然有效。会话寿命由 `APP_SESSION_TTL_MIN` 决定，缺省 1440 分钟；鉴权读取只校验有效期，过期行由启动和每日维护任务清理。
 唯一键冲突统一转为 HTTP 409；文章、页面、分类/标签和用户名分别返回稳定的 `post_taken`、`page_taken`、`term_taken`、`username_taken` 错误码。错误分类依据 SQLite 约束码，不解析驱动错误文本。
@@ -94,7 +94,7 @@ cd ..
 go run ./cmd/server
 ```
 
-开发时可以并行运行 `go run ./cmd/server` 与 `cd web && npm run dev`，Vite 会把 API、媒体、存活和就绪请求代理到 `127.0.0.1:<APP_PORT>`（默认 `8080`）。设置 `VITE_API_PROXY_TARGET` 可覆盖代理目标，例如服务运行在另一台主机时。
+开发时可以并行运行 `go run ./cmd/server` 与 `cd web && npm run dev`，Vite 会把 API、媒体、存活和就绪请求代理到 `127.0.0.1:<APP_PORT>`（默认 `8081`）。设置 `VITE_API_PROXY_TARGET` 可覆盖代理目标，例如服务运行在另一台主机时。
 
 ## DELETE 幂等性
 

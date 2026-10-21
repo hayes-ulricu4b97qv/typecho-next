@@ -96,66 +96,47 @@ func TestOldDatabaseIsRejectedWithoutChangingIt(t *testing.T) {
 	}
 }
 
-func TestRecognizedLegacyGoSchemaIsMigratedAndPreservesData(t *testing.T) {
+func TestLegacyGoSchemaIsRejectedWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
 	createLegacyDatabase(t, path, "2025-03-04T05:06:07.890123456+08:00")
 
-	repo, err := NewSQLiteRepository(path)
+	if repo, err := NewSQLiteRepository(path); err == nil {
+		_ = repo.Close()
+		t.Fatal("opened an unversioned legacy Go database")
+	} else if !strings.Contains(err.Error(), "unrecognized unversioned database") {
+		t.Fatalf("legacy Go database error = %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = repo.Close() })
-
-	var version int
-	if err := repo.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+	defer db.Close()
+	var version, customFieldsColumns int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != currentSchemaVersion {
-		t.Fatalf("migrated schema version = %d, want %d", version, currentSchemaVersion)
-	}
-
-	var siteName, siteDescription string
-	if err := repo.db.QueryRow(`SELECT name, description FROM sites WHERE id = 1`).Scan(&siteName, &siteDescription); err != nil {
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('posts') WHERE name = 'custom_fields'").Scan(&customFieldsColumns); err != nil {
 		t.Fatal(err)
 	}
-	if siteName != "Legacy site" || siteDescription != "" {
-		t.Fatalf("legacy site changed: name=%q description=%q", siteName, siteDescription)
-	}
-	var postTitle, postContent, publishedAt, customFields string
-	if err := repo.db.QueryRow(`SELECT title, content, published_at, custom_fields FROM posts WHERE id = 'legacy-post'`).Scan(&postTitle, &postContent, &publishedAt, &customFields); err != nil {
+	var content string
+	if err := db.QueryRow("SELECT content FROM posts WHERE id = 'legacy-post'").Scan(&content); err != nil {
 		t.Fatal(err)
 	}
-	if postTitle != "Legacy post" || postContent != "Keep this body" || publishedAt != "2025-03-03T21:06:07.890123456Z" || customFields != "{}" {
-		t.Fatalf("legacy post changed: title=%q content=%q published_at=%q custom_fields=%q", postTitle, postContent, publishedAt, customFields)
-	}
-	var tokenHash, sessionUsername, sessionUserID string
-	if err := repo.db.QueryRow(`SELECT token_hash, username, user_id FROM sessions WHERE token_hash = 'legacy-token'`).Scan(&tokenHash, &sessionUsername, &sessionUserID); err != nil {
-		t.Fatal(err)
-	}
-	if tokenHash != "legacy-token" || sessionUsername != "legacy-owner" || sessionUserID != "" {
-		t.Fatalf("legacy session changed: token=%q username=%q user_id=%q", tokenHash, sessionUsername, sessionUserID)
-	}
-	var commentAuthor, commentParentID string
-	if err := repo.db.QueryRow(`SELECT author_name, parent_id FROM comments WHERE id = 'legacy-comment'`).Scan(&commentAuthor, &commentParentID); err != nil {
-		t.Fatal(err)
-	}
-	if commentAuthor != "Old commenter" || commentParentID != "" {
-		t.Fatalf("legacy comment changed: author=%q parent_id=%q", commentAuthor, commentParentID)
-	}
-	if columns := tableColumns(t, repo, "post_revisions"); !columns["custom_fields"] {
-		t.Fatal("migrated post_revisions schema lacks custom_fields")
+	if version != 0 || customFieldsColumns != 0 || content != "Keep this body" {
+		t.Fatalf("rejected legacy database changed: version=%d customFieldsColumns=%d content=%q", version, customFieldsColumns, content)
 	}
 }
 
-func TestLegacyMigrationRollsBackOnInvalidTimestamp(t *testing.T) {
+func TestLegacyGoSchemaIsRejectedBeforeReadingTimestamps(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
 	createLegacyDatabase(t, path, "not-a-timestamp")
 
 	if repo, err := NewSQLiteRepository(path); err == nil {
 		_ = repo.Close()
-		t.Fatal("migrated a legacy database with an invalid timestamp")
-	} else if !strings.Contains(err.Error(), "invalid RFC3339 timestamp") {
-		t.Fatalf("invalid timestamp error = %v", err)
+		t.Fatal("opened an unversioned legacy database with an invalid timestamp")
+	} else if !strings.Contains(err.Error(), "unrecognized unversioned database") {
+		t.Fatalf("legacy database error = %v", err)
 	}
 
 	db, err := sql.Open("sqlite3", path)
@@ -180,11 +161,11 @@ func TestLegacyMigrationRollsBackOnInvalidTimestamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	if version != 0 || customFieldsColumns != 0 || storedTimestamp != "not-a-timestamp" || tableCount != 15 {
-		t.Fatalf("failed migration was not rolled back: version=%d customFieldsColumns=%d updated_at=%q tableCount=%d", version, customFieldsColumns, storedTimestamp, tableCount)
+		t.Fatalf("rejected legacy database changed: version=%d customFieldsColumns=%d updated_at=%q tableCount=%d", version, customFieldsColumns, storedTimestamp, tableCount)
 	}
 }
 
-func TestIncompleteLegacyMigrationHistoryIsRejectedWithoutChangingIt(t *testing.T) {
+func TestLegacyGoSchemaWithIncompleteHistoryIsRejectedWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
 	createLegacyDatabase(t, path, "2025-03-04T05:06:07.890123456+08:00")
 	db, err := sql.Open("sqlite3", path)
@@ -227,7 +208,7 @@ func TestIncompleteLegacyMigrationHistoryIsRejectedWithoutChangingIt(t *testing.
 	}
 }
 
-func TestLegacySchemaWithUnexpectedTriggerIsRejectedBeforeMigration(t *testing.T) {
+func TestLegacySchemaWithUnexpectedTriggerIsRejectedWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
 	createLegacyDatabase(t, path, "2025-03-04T05:06:07.890123456+08:00")
 	db, err := sql.Open("sqlite3", path)
@@ -244,8 +225,8 @@ func TestLegacySchemaWithUnexpectedTriggerIsRejectedBeforeMigration(t *testing.T
 
 	if repo, err := NewSQLiteRepository(path); err == nil {
 		_ = repo.Close()
-		t.Fatal("started a legacy migration with an unexpected trigger")
-	} else if !strings.Contains(err.Error(), `unexpected trigger "unapproved_schema_trigger"`) {
+		t.Fatal("opened an unversioned legacy database with an unexpected trigger")
+	} else if !strings.Contains(err.Error(), `unrecognized unversioned database`) {
 		t.Fatalf("unexpected legacy schema object error = %v", err)
 	}
 
@@ -688,7 +669,7 @@ func TestForeignKeyValidationChecksDeleteAction(t *testing.T) {
 	}
 }
 
-func TestCheckConstraintValidationAllowsOnlyKnownLegacyOmissions(t *testing.T) {
+func TestCheckConstraintValidationRejectsMissingCurrentConstraints(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -702,11 +683,8 @@ func TestCheckConstraintValidationAllowsOnlyKnownLegacyOmissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := validateCheckConstraints(tx, "sites", false); err == nil {
+	if err := validateCheckConstraints(tx, "sites"); err == nil {
 		t.Fatal("accepted a current schema missing reading-setting CHECK constraints")
-	}
-	if err := validateCheckConstraints(tx, "sites", true); err != nil {
-		t.Fatalf("rejected known legacy CHECK omissions: %v", err)
 	}
 }
 
@@ -728,7 +706,7 @@ func TestCheckConstraintValidationIgnoresCommentsAndPreservesLiteralValues(t *te
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := validateCheckConstraints(tx, "users", false); err == nil {
+	if err := validateCheckConstraints(tx, "users"); err == nil {
 		t.Fatal("accepted a CHECK constraint that appears only in a SQL comment")
 	}
 

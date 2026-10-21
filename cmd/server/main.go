@@ -33,7 +33,7 @@ func run() int {
 	defer signal.Stop(shutdown)
 
 	dataDir := envOr("APP_DATA_DIR", "./data")
-	port := envOr("APP_PORT", "8080")
+	port := envOr("APP_PORT", "8081")
 	settings := config.FromEnv()
 	smtpMailer, err := mailer.FromEnv()
 	if err != nil {

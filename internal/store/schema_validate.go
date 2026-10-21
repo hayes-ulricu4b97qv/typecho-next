@@ -15,16 +15,6 @@ func validateCurrentSchema(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	legacyCompatibility := tables["schema_migrations"]
-	if legacyCompatibility {
-		recognized, err := isRecognizedLegacySchema(tx)
-		if err != nil {
-			return fmt.Errorf("validate legacy schema provenance: %w", err)
-		}
-		if !recognized {
-			return errors.New("schema_migrations is present but the database is not a recognized Go legacy schema")
-		}
-	}
 	for _, table := range currentSchemaTables {
 		missing, err := missingSchemaItem(tx, tables, table)
 		if err != nil {
@@ -50,102 +40,20 @@ func validateCurrentSchema(tx *sql.Tx) error {
 		if err := validateTableForeignKeys(tx, table.name); err != nil {
 			return err
 		}
-		if err := validateCheckConstraints(tx, table.name, legacyCompatibility); err != nil {
+		if err := validateCheckConstraints(tx, table.name); err != nil {
 			return err
 		}
 		if err := validateConstraintConflictPolicies(tx, table.name); err != nil {
 			return err
 		}
 	}
-	if !legacyCompatibility && len(tables) != len(currentSchemaTables) {
+	if len(tables) != len(currentSchemaTables) {
 		return fmt.Errorf("current schema has %d user tables, expected %d", len(tables), len(currentSchemaTables))
 	}
 	if err := validateNoUnexpectedViewsAndTriggers(tx); err != nil {
 		return err
 	}
 	return validateCurrentSchemaIndexes(tx)
-}
-
-func isRecognizedLegacySchema(tx *sql.Tx) (bool, error) {
-	existingTables, err := schemaTableNames(tx)
-	if err != nil {
-		return false, err
-	}
-	if len(existingTables) != len(legacySchemaTables) {
-		return false, nil
-	}
-	if err := validateNoUnexpectedViewsAndTriggers(tx); err != nil {
-		return false, err
-	}
-	for _, table := range legacySchemaTables {
-		missing, err := missingSchemaItem(tx, existingTables, table)
-		if err != nil {
-			return false, err
-		}
-		if missing != "" {
-			return false, nil
-		}
-		columns, err := schemaColumnNames(tx, table.name)
-		if err != nil {
-			return false, err
-		}
-		allowedColumns := map[string]bool{}
-		for _, column := range table.columns {
-			allowedColumns[column] = true
-		}
-		for column := range legacyOptionalColumns[table.name] {
-			allowedColumns[column] = true
-		}
-		for column := range columns {
-			if !allowedColumns[column] {
-				return false, nil
-			}
-		}
-		mismatch, err := schemaColumnShapeMismatch(tx, table.name, allowedColumns)
-		if err != nil {
-			return false, err
-		}
-		if mismatch != "" {
-			return false, nil
-		}
-		if err := validateUniqueConstraints(tx, table.name); err != nil {
-			return false, err
-		}
-		if err := validateTableForeignKeys(tx, table.name); err != nil {
-			return false, err
-		}
-		if err := validateCheckConstraints(tx, table.name, true); err != nil {
-			return false, err
-		}
-		if err := validateConstraintConflictPolicies(tx, table.name); err != nil {
-			return false, nil
-		}
-	}
-	return hasCompleteLegacyMigrationHistory(tx)
-}
-
-func hasCompleteLegacyMigrationHistory(tx *sql.Tx) (bool, error) {
-	rows, err := tx.Query(`SELECT version FROM schema_migrations`)
-	if err != nil {
-		return false, fmt.Errorf("read migration history: %w", err)
-	}
-	defer rows.Close()
-
-	versions := map[int]bool{}
-	for rows.Next() {
-		var version int
-		if err := rows.Scan(&version); err != nil {
-			return false, fmt.Errorf("read migration version: %w", err)
-		}
-		if version < 1 || version > 8 || versions[version] {
-			return false, nil
-		}
-		versions[version] = true
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("iterate migration history: %w", err)
-	}
-	return len(versions) == 8, nil
 }
 
 func schemaTableNames(tx *sql.Tx) (map[string]bool, error) {
@@ -508,7 +416,7 @@ func schemaForeignKeySignature(foreignKey schemaForeignKey) string {
 	}, ":")
 }
 
-func validateCheckConstraints(tx *sql.Tx, table string, legacy bool) error {
+func validateCheckConstraints(tx *sql.Tx, table string) error {
 	var definition string
 	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&definition); err != nil {
 		return fmt.Errorf("read %s table definition: %w", table, err)
@@ -524,9 +432,6 @@ func validateCheckConstraints(tx *sql.Tx, table string, legacy bool) error {
 	expected := map[string]int{}
 	for _, expression := range schemaCheckExpressions[table] {
 		normalized := normalizeCheckExpression(expression)
-		if legacy && legacyAddedColumnChecks[table][normalized] {
-			continue
-		}
 		expected[normalized]++
 	}
 	if !maps.Equal(actual, expected) {

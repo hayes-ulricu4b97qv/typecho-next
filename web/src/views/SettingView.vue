@@ -50,7 +50,9 @@ const form = reactive({
   keywords: props.status.site?.keywords ?? '',
   adminUsername: '',
   adminPassword: '',
+  adminPasswordConfirm: '',
 })
+const setupPasswordMismatch = computed(() => form.adminPasswordConfirm !== '' && form.adminPassword !== form.adminPasswordConfirm)
 const accountForm = reactive({ email: '', currentPassword: '', newPassword: '' })
 const userForm = reactive({ username: '', email: '', password: '', role: 'editor' as 'editor' | 'moderator' })
 const readingForm = reactive<ReadingSettings>({
@@ -89,7 +91,7 @@ function clearOwnerSettings(notice: string, retainSignedIn = false) {
   accountLoading.value = false
   accountError.value = ''
   settingsAccessNotice.value = notice
-  Object.assign(form, { siteName: '', siteUrl: '', adminEmail: '', timezone: 'Asia/Shanghai', description: '', keywords: '', adminUsername: '', adminPassword: '' })
+  Object.assign(form, { siteName: '', siteUrl: '', adminEmail: '', timezone: 'Asia/Shanghai', description: '', keywords: '', adminUsername: '', adminPassword: '', adminPasswordConfirm: '' })
   savedSite.value = siteSnapshot()
   submitting.value = false
   message.value = ''
@@ -309,6 +311,7 @@ async function loadUsers() {
 async function submit() {
   if (submitting.value) return
   if (initialized && (!canManageUsers.value || !accountChecked.value || !siteLoaded.value || siteLoading.value)) return
+  if (!initialized && form.adminPassword !== form.adminPasswordConfirm) return
   const requestSession = settingsSessionGeneration.value
   submitting.value = true
   message.value = ''
@@ -465,8 +468,8 @@ onUnmounted(() => {
 <template>
   <main class="settings-shell" :class="{ 'is-setup': !initialized }">
     <header class="settings-bar">
-      <a class="brand" href="/user"><span class="brand-mark">{{ status.site?.name?.trim().slice(0, 1) || '博' }}</span><span class="brand-name">{{ status.site?.name ?? '博客' }}</span></a>
-      <nav class="settings-links"><a href="/admin">管理</a><a href="/user">阅读</a></nav>
+      <component :is="initialized ? 'a' : 'span'" class="brand" :href="initialized ? '/user' : undefined"><span class="brand-mark">{{ status.site?.name?.trim().slice(0, 1) || '博' }}</span><span class="brand-name">{{ status.site?.name ?? '博客' }}</span></component>
+      <nav v-if="initialized" class="settings-links"><a href="/admin">管理</a><a href="/user">阅读</a></nav>
     </header>
     <p v-if="settingsRevalidating" class="settings-access" role="status">正在重新确认账户权限…</p>
     <div v-else class="settings-frame">
@@ -520,6 +523,10 @@ onUnmounted(() => {
               <div class="form-grid">
                 <label>用户名<input v-model="form.adminUsername" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_-]+" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="admin" /></label>
                 <label>密码<input v-model="form.adminPassword" required minlength="8" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
+                <div class="setup-password-confirm">
+                  <label>确认密码<input v-model="form.adminPasswordConfirm" required minlength="8" type="password" autocomplete="new-password" placeholder="再次输入密码" :aria-invalid="setupPasswordMismatch ? 'true' : undefined" :aria-describedby="setupPasswordMismatch ? 'setup-password-mismatch' : undefined" /></label>
+                  <small v-if="setupPasswordMismatch" id="setup-password-mismatch" class="field-hint is-error" role="status">两次输入的密码不一致</small>
+                </div>
               </div>
             </fieldset>
             <p v-if="error" class="form-error" role="alert">{{ error }}</p>

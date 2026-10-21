@@ -1,7 +1,7 @@
 # Typecho Next
 
 Typecho Next is a personal publishing platform with a Go API and a Vue 3 + TypeScript client.
-Windows is the only supported development and deployment platform.
+Native development and packaged releases target Windows x64. Linux servers can deploy from source with the provided Docker Compose stack.
 
 ## Product entry points
 
@@ -14,13 +14,24 @@ Windows is the only supported development and deployment platform.
 - `/api/v1` — versioned JSON API
 - `/healthz` / `/readyz` — liveness and readiness checks
 
-The service redirects every page to `/setting` until setup creates the site and the owner account. Runtime data is stored in SQLite at `APP_DATA_DIR/app.db`. Opening an empty data directory creates a database with the current schema. The application can upgrade databases created by the earlier Go versions when their migration history and schema match the supported legacy format. It refuses unknown or unsupported databases without changing their contents; see the operations guide before upgrading or replacing a database. Importing old PHP or `app.json` data is not supported.
+The service redirects every page to `/setting` until setup creates the site and the owner account. Runtime data is stored in SQLite at `APP_DATA_DIR/app.db`. Opening an empty data directory creates a database with the current schema. Older database schemas are not upgraded: the application refuses unversioned or unsupported databases without changing them. Use a new empty `APP_DATA_DIR` to initialize a site. Importing old PHP or `app.json` data is not supported.
 
 ## Install a release
 
-When a release is available, download the Windows x64 ZIP from the [Releases page](https://github.com/hayes-ulricu4b97qv/tyoechonext/releases) and extract it to a stable application directory. Run `start.cmd`, then open <http://127.0.0.1:8080/setting> to create the owner account and configure the site. If the page has no published package yet, use the development quick start below to run the app from source.
+When a release is available, download the Windows x64 ZIP from the [Releases page](https://github.com/hayes-ulricu4b97qv/tyoechonext/releases) and extract it to a stable application directory. Run `start.cmd`, then open <http://127.0.0.1:8081/setting> to create the owner account and configure the site. If the page has no published package yet, use the development quick start below to run the app from source.
 
 The launcher stores the database and uploads under `%LOCALAPPDATA%\TypechoNext\data` by default, separately from the application files. Back up that data directory before replacing an installation. For public access, keep the app bound to `127.0.0.1` and put a TLS reverse proxy in front of it. Upgrade and rollback steps are in [docs/operations.md](docs/operations.md).
+
+## Deploy with Docker
+
+For a Linux server, install Docker Engine and the Compose plugin, point your domain to the server, and allow inbound TCP ports 80 and 443. Copy `.env.example` to `.env` and set `SITE_DOMAIN` to the public hostname without a scheme or path. Then run from the repository root:
+
+```sh
+cp .env.example .env
+docker compose --env-file .env -f deploy/compose.yaml up -d --build
+```
+
+Open `https://your-domain/setting` to create the owner account. Caddy obtains TLS certificates automatically. Only Caddy publishes host ports; the app stays on the private Compose network. SQLite, uploads, and Caddy certificates are stored in named volumes. This stack builds the image locally; the project does not publish container images.
 
 ## Development quick start
 
@@ -32,16 +43,16 @@ cd ..
 go run ./cmd/server
 ```
 
-Open <http://127.0.0.1:8080/setting> and complete the setup form. The HTTP service binds to `127.0.0.1` by default. For development, run Vite with `cd web && npm run dev`; its API, media, health and readiness proxies use `APP_PORT` or `VITE_API_PROXY_TARGET`.
+Open <http://127.0.0.1:8081/setting> and complete the setup form. The HTTP service binds to `127.0.0.1` by default. For development, run Vite with `cd web && npm run dev`; its API, media, health and readiness proxies use `APP_PORT` or `VITE_API_PROXY_TARGET`.
 
 See [docs/architecture.md](docs/architecture.md) for the module boundaries.
-See [docs/operations.md](docs/operations.md) for native deployment, configuration, backups and recovery.
+See [docs/operations.md](docs/operations.md) for native and container deployment, configuration, backups and recovery.
 See [docs/productization.md](docs/productization.md) for the supported product scope and release expectations.
 Password recovery requires SMTP configuration; see the operations guide for the supported TLS modes and environment variables.
 
 ## Requirements
 
-Running a release requires Windows x64 and writable data and media directories. Go, Node.js, and GCC are not needed to run the release package.
+Running a Windows release requires Windows x64 and writable data and media directories. Go, Node.js, and GCC are not needed to run the release package. Docker deployment requires a Linux host with Docker Engine and the Compose plugin; the Compose file builds the image locally.
 
 Building from source requires Go 1.27.3 or newer, Windows with PowerShell, Node.js 22 or newer, and MinGW-w64 GCC on PATH for CGO SQLite builds. Release packaging also requires `objdump` from MinGW-w64 Binutils to check executable imports.
 
